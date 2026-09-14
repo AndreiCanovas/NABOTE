@@ -132,6 +132,19 @@ nabote dump --view amp --top 15         # dump cru, para depurar
 nabote runs                             # de onde veio cada aresta
 ```
 
+```bash
+nabote themes --view amp --min-community 500   # do que cada comunidade falava
+```
+
+`themes` é o **nível 1** do plano: a pauta emerge da estrutura. A comunidade é
+descoberta pelo grafo, sem olhar texto nenhum; só depois se pergunta sobre o que
+ela falava. Nesta base o rótulo sai de graça, porque a coleta foi por Trending
+Topic e o termo veio no nome do arquivo — o que faz dele **gabarito** para
+conferir o clustering de texto do passo 3.
+
+O termo é atribuído pelos posts autorados na comunidade. Ator Tier C não
+escreveu nada na amostra, então não vota: ele é alvo, não voz.
+
 `runs` mostra qual termo alimentou qual janela. Numa coleta por termo isso não é
 metadado burocrático: o termo é parte do resultado. Um grafo montado com "bbb23"
 e um montado com "impeachment" não são a mesma rede vista duas vezes, e sem a
@@ -189,7 +202,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-131 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+135 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

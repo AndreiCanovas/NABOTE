@@ -202,6 +202,85 @@ def cmd_runs(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_themes(args: argparse.Namespace) -> int:
+    """Do que cada comunidade estava falando.
+
+    Nível 1 do plano: as pautas EMERGEM da estrutura, em vez de o tema ser
+    escolhido antes e virar filtro. A comunidade é descoberta pelo grafo, sem
+    olhar texto nenhum; só depois se pergunta sobre o que ela falava.
+
+    Nesta base o rótulo sai de graça, porque a coleta foi por Trending Topic e
+    o termo veio no nome do arquivo. Em produção o rótulo virá do passo 3
+    (clustering de texto) — e estes termos servem de gabarito para conferir se
+    aquele clustering acerta.
+
+    O termo é atribuído pelos posts AUTORADOS na comunidade. Ator Tier C não
+    escreveu nada na amostra, então não vota: ele é alvo, não voz.
+    """
+    conn = db.connect(args.db)
+    try:
+        windows = _windows(conn, args)
+        if not windows:
+            print("nada a mostrar.", file=sys.stderr)
+            return 1
+        scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
+
+        for window in windows:
+            todas = conn.execute(
+                "SELECT community_id, size, ei_mean FROM community "
+                "WHERE window_start=? AND scope=? ORDER BY size DESC",
+                (window, scope)).fetchall()
+            if not todas:
+                print(f"{window}: sem comunidades para scope={scope}. "
+                      f"Rode `analyze --view {args.view}`.", file=sys.stderr)
+                continue
+            # "não analisado" e "o filtro cortou tudo" são problemas diferentes,
+            # e mandar rodar `analyze` de novo no segundo caso é conselho errado.
+            comunidades = [c for c in todas
+                           if c["size"] >= args.min_community][:args.top]
+            if not comunidades:
+                print(f"{window}: {len(todas)} comunidades, nenhuma com "
+                      f"{args.min_community}+ atores (a maior tem "
+                      f"{todas[0]['size']}). Baixe o --min-community.",
+                      file=sys.stderr)
+                continue
+
+            janela_sql = graph.WINDOW_SQL.format(col="p.created_at")
+            termos: dict[int, list[tuple[str, int]]] = {}
+            vozes: dict[int, int] = {}
+            for r in conn.execute(f"""
+                SELECT ac.community_id AS com, cr.campaign_label AS termo,
+                       COUNT(*) AS posts, COUNT(DISTINCT p.actor_id) AS autores
+                FROM actor_community ac
+                JOIN post p ON p.actor_id = ac.actor_id
+                JOIN collection_run cr ON cr.run_id = p.run_id
+                WHERE ac.window_start=? AND ac.scope=? AND {janela_sql} = ?
+                GROUP BY ac.community_id, cr.campaign_label
+            """, (window, scope, window)):
+                termos.setdefault(r["com"], []).append((r["termo"] or "?", r["posts"]))
+                vozes[r["com"]] = vozes.get(r["com"], 0) + r["autores"]
+
+            print(f"\njanela {window}   visão {scope}")
+            for c in comunidades:
+                ei = f"{c['ei_mean']:+.2f}" if c["ei_mean"] is not None else "  -  "
+                lista = sorted(termos.get(c["community_id"], []), key=lambda t: -t[1])
+                total = sum(n for _, n in lista)
+                print(f"\n  #{c['community_id']:<4} {c['size']:>5} atores   "
+                      f"E-I {ei}   {vozes.get(c['community_id'], 0)} com voz")
+                if not total:
+                    # Comunidade só de alvos: existe no grafo, não fala nele.
+                    print("        (ninguém autorou post nesta janela)")
+                    continue
+                for termo, n in lista[:args.terms]:
+                    print(f"        {termo[:34]:<35}{n:>7,}  {n / total:>5.0%}"
+                          .replace(",", "."))
+                if len(lista) > args.terms:
+                    print(f"        … + {len(lista) - args.terms} outros termos")
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_aggregate(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     try:
@@ -671,6 +750,13 @@ def build_parser() -> argparse.ArgumentParser:
                            help="amp = repost+citação (padrão) · reply = respostas")
         return p
 
+    th = _janela(sub.add_parser("themes", help="do que cada comunidade estava falando"),
+                 com_view=True)
+    th.add_argument("--top", type=int, default=20, help="comunidades (padrão: 20)")
+    th.add_argument("--terms", type=int, default=5, help="termos por comunidade")
+    th.add_argument("--min-community", type=int, default=50, metavar="N",
+                    help="ignora comunidades com menos de N atores (padrão: 50)")
+
     runs = sub.add_parser("runs", help="de onde veio cada aresta: termo por janela")
     runs.add_argument("--top", type=int, default=10,
                       help="termos por janela (padrão: 10)")
@@ -728,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("--kind=campanha exige --campaign RÓTULO")
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
+            "themes": cmd_themes,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)

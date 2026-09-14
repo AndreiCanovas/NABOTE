@@ -189,5 +189,95 @@ class TestRuns(unittest.TestCase):
         self.assertIn("50 posts", janeiro)  # 30 do lula + 20 do bolsonaro
 
 
+class TestThemes(unittest.TestCase):
+    """Nível 1 do plano: a pauta EMERGE da estrutura.
+
+    A comunidade é descoberta pelo grafo, sem olhar texto nenhum; só depois se
+    pergunta sobre o que ela falava. Nesta base o rótulo sai de graça porque a
+    coleta foi por Trending Topic, e serve de gabarito para o clustering de
+    texto do passo 3.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "t.db"
+        self.conn = db.connect(self.path)
+        db.migrate(self.conn, ROOT / "migrations")
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def carrega(self, termo, hub, prefixo, n, quando="2022-12-28T10:00:00Z"):
+        from nabote.events import NormalizedEvent, Target
+
+        class Fonte:
+            def __init__(self, nome, eventos):
+                self.name, self._eventos, self.skipped = nome, eventos, 0
+
+            def events(self, cursor=None):
+                yield from self._eventos
+
+        eventos = [NormalizedEvent(
+            platform="x", kind="post", actor_uid=f"{prefixo}{i}",
+            occurred_at=quando, post_uid=f"p{prefixo}{quando[:10]}{i}",
+            post_type="repost", targets=[Target(kind="repost", uid=hub)])
+            for i in range(n)]
+        ingest.ingest(self.conn, Fonte(f"x:{termo}:{quando[:10]}", eventos),
+                      kind="campanha", campaign_label=termo, author_tier="C",
+                      resume=False)
+
+    def themes(self, window, **kwargs) -> str:
+        for w in graph.windows_present(self.conn):
+            graph.aggregate_window(self.conn, w)
+            graph.analyze_window(self.conn, w, view="amp")
+        args = argparse.Namespace(
+            db=str(self.path), window=window, all=False, scope="all",
+            view="amp", top=20, terms=5, min_community=5)
+        for key, value in kwargs.items():
+            setattr(args, key, value)
+        buffer = io.StringIO()
+        self.conn.commit()
+        with redirect_stdout(buffer):
+            self.assertEqual(cli.cmd_themes(args), 0)
+        return buffer.getvalue()
+
+    def test_uma_comunidade_com_duas_pautas_mostra_a_proporcao(self):
+        """Todos reposta o MESMO hub, então o grafo faz UMA comunidade. Os
+        termos vêm de runs diferentes — é a mistura de pauta dentro de um só
+        grupo, que é o caso interessante e o mais fácil de errar."""
+        self.carrega("posse", "hub", "a", 30)
+        self.carrega("bbb23", "hub", "b", 10)
+        saida = self.themes("2022-12-26")
+        self.assertIn("posse", saida)
+        self.assertIn("75%", saida)
+        self.assertIn("bbb23", saida)
+        self.assertIn("25%", saida)
+
+    def test_post_de_outra_janela_nao_vaza(self):
+        """Sem o filtro de janela, a pauta de uma semana é atribuída à outra —
+        e o relatório fica plausível e falso."""
+        self.carrega("posse", "hub", "a", 30, quando="2022-12-28T10:00:00Z")
+        self.carrega("carnaval", "hub", "a", 30, quando="2023-02-15T10:00:00Z")
+        dezembro = self.themes("2022-12-26")
+        self.assertIn("posse", dezembro)
+        self.assertNotIn("carnaval", dezembro)
+        fevereiro = self.themes("2023-02-13")
+        self.assertIn("carnaval", fevereiro)
+        self.assertNotIn("posse", fevereiro)
+
+    def test_alvo_sem_post_nao_vota(self):
+        """Tier C é alvo, não voz: ele está no grafo sem ter escrito nada. Se
+        contasse como autor, a pauta de quem foi citado viraria pauta dele."""
+        self.carrega("posse", "hub", "a", 12)
+        saida = self.themes("2022-12-26")
+        self.assertIn("12 com voz", saida)   # 13 atores no grafo, 12 autores
+        self.assertIn("13 atores", saida)
+
+    def test_min_community_esconde_as_pequenas(self):
+        self.carrega("posse", "hub", "a", 30)
+        self.assertNotIn("posse", self.themes("2022-12-26", min_community=500))
+
+
 if __name__ == "__main__":
     unittest.main()
