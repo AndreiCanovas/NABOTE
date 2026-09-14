@@ -37,6 +37,23 @@ graça, sem uma linha de NLP escrita.
 
 Sem dependências externas no passo 0 — só a biblioteca padrão do Python 3.11+.
 
+### Onde rodar
+
+O código roda **na sua máquina ou num Codespace** — precisa de saída de rede
+para o Bluesky (`public.api.bsky.app` e `jetstream*.bsky.network`).
+
+**Sem instalar nada — GitHub Codespaces.** No repositório: botão verde `Code`
+→ aba `Codespaces` → `Create codespace`. Abre um VS Code no navegador com
+Python e o projeto já instalado (`.devcontainer/` cuida disso). Vá no terminal
+e rode os comandos abaixo. Contas pessoais têm cota gratuita mensal.
+
+**Na sua máquina.** Precisa de Python 3.11+ e git:
+
+```bash
+python3 --version      # precisa ser 3.11 ou maior
+git --version
+```
+
 ### Começando do zero — quatro comandos
 
 ```bash
