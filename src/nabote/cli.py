@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, db, graph, identity, ingest
+from . import __version__, db, graph, identity, ingest, probe
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -366,6 +366,40 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Mostra esquema e amostra de uma base externa, antes de escrever adaptador."""
+    alvo = Path(args.path)
+    if not alvo.exists():
+        print(f"não encontrei {alvo}", file=sys.stderr)
+        return 1
+
+    if alvo.suffix == ".zip":
+        membros = probe.list_zip_members(alvo)
+        if not membros:
+            print(f"{alvo} não tem nenhum .parquet dentro", file=sys.stderr)
+            return 1
+
+        total = sum(tam for _, tam in membros)
+        print(f"{alvo.name}  —  {len(membros)} arquivos parquet, "
+              f"{total / 1e9:.2f} GB descomprimidos\n")
+        if args.list:
+            for nome, tam in membros:
+                print(f"  {tam / 1e6:>8.1f} MB  {nome}")
+            return 0
+
+        # sem --member, escolhe o menor: baixa memória e resposta rápida
+        membro = args.member or min(membros, key=lambda pair: pair[1])[0]
+        tamanho = dict(membros)[membro]
+        print(f"inspecionando: {membro}  ({tamanho / 1e6:.1f} MB)\n")
+        tabela = probe.read_parquet_member(alvo, membro)
+    else:
+        print(f"inspecionando: {alvo.name}\n")
+        tabela = probe.read_parquet_file(alvo)
+
+    print(probe.describe(tabela, sample_rows=args.rows))
+    return 0
+
+
 class JetstreamDefaults:
     """Constantes lidas sem importar o cliente WebSocket."""
     host = "jetstream2.us-east.bsky.network"
@@ -416,6 +450,12 @@ def build_parser() -> argparse.ArgumentParser:
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
 
+    insp = sub.add_parser("inspect", help="esquema e amostra de uma base externa")
+    insp.add_argument("path", help="caminho de um .zip ou .parquet")
+    insp.add_argument("--member", help="arquivo dentro do zip (padrão: o menor)")
+    insp.add_argument("--list", action="store_true", help="só lista o conteúdo do zip")
+    insp.add_argument("--rows", type=int, default=3, help="linhas de amostra")
+
     disc = sub.add_parser("discover", help="busca contas no Bluesky por nome de pessoa")
     disc.add_argument("--name", action="append", help="nome a buscar (repetível)")
     disc.add_argument("--file", help="arquivo com um nome por linha")
@@ -444,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
+            "inspect": cmd_inspect,
             "cycle": cmd_cycle}[args.command](args)
 
 
