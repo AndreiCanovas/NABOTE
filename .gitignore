@@ -1,0 +1,25 @@
+# banco e dados coletados — nunca versionados
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# payloads brutos arquivados
+raw/
+exports/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# segredos (chaves de agregador)
+.env
+.env.*
+!.env.example
+
+# sistema
+.DS_Store

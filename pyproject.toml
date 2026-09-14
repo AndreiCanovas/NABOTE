@@ -1,0 +1,21 @@
+[project]
+name = "nabote"
+version = "0.1.0"
+description = "Instrumento analítico interno de mapeamento do discurso público brasileiro"
+requires-python = ">=3.11"
+# Sem dependências no passo 0: o schema e a CLI usam só a biblioteca padrão.
+# igraph, sentence-transformers e o cliente HTTP entram nos passos 2, 3 e 1.
+dependencies = []
+
+[project.scripts]
+nabote = "nabote.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
