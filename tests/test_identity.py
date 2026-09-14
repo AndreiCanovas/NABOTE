@@ -167,6 +167,8 @@ class TestUnofficialFlag(unittest.TestCase):
             ("Nikolas F. de Oliveira", "41• Presidente 🇧🇷 CONTA DE FÃ 🇧🇷"),
             ("Arthur Lira", "NÃO sou o político he/him"),
             ("Silas Não o Malafaia", "onde queres agito sou sossego"),
+            ("Not Guilherme Boulos", "Neto de estivador, filho de professora."),
+            ("Lucas Constantino - não sou o", "eu sou lucascons"),
             ("Fernando Haddad", "Perfil não oficial. Divulgando atividades do ministro"),
             ("Apoiadores Do Guilherme Boulos", "Perfil de apoio a Guilherme Boulos"),
             ("Romeu Zema", "fã clube do pior governador do brasil"),
@@ -183,6 +185,9 @@ class TestUnofficialFlag(unittest.TestCase):
             ("ERIKA HILTON", "Deputada do PSOL ☀️ por São Paulo."),
             ("Marina Silva", "Ministra do Meio Ambiente e Mudança do Clima"),
             ("Reinaldo Azevedo", "Jornalista. Siga no Reconversa (YouTube), na BandNews FM"),
+            # sobrenome que CONTÉM 'not' não pode disparar — daí a borda de palavra
+            ("Renato Notaro", "Analista de políticas públicas"),
+            ("Míriam Leitão", "Jornalista e escritora"),
         ]
         for nome, bio in casos:
             with self.subTest(nome=nome):

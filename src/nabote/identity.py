@@ -10,6 +10,7 @@ Handle muda, DID não. Guardamos os dois, e é o DID que manda.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import urllib.error
 import urllib.parse
@@ -175,12 +176,22 @@ _NAO_OFICIAL = (
 )
 
 
+# Negação isolada no NOME DE EXIBIÇÃO. "Silas Não o Malafaia", "Not Guilherme
+# Boulos" — convenção comum de paródia e homônimo no Bluesky. Restrito ao nome
+# de exibição de propósito: é curto, e um nome real raramente traz "não"/"not"
+# como palavra inteira. Na bio, a mesma busca daria falso positivo à vontade.
+_NEGACAO_NO_NOME = re.compile(r"\b(n[ãa]o|not)\b", re.IGNORECASE)
+
+
 def flag_declared_unofficial(display_name: str, description: str) -> str | None:
     """Devolve o trecho que declara não-oficialidade, se houver."""
     blob = f"{display_name} {description}".lower()
     for marca in _NAO_OFICIAL:
         if marca in blob:
             return marca
+    achado = _NEGACAO_NO_NOME.search(display_name or "")
+    if achado:
+        return f"negação no nome ('{achado.group(0)}')"
     return None
 
 
