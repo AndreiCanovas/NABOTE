@@ -135,6 +135,26 @@ nabote dump --view amp --top 15         # dump cru, para depurar
 justamente para você enxergar o que a coleta trouxe antes de existir qualquer
 relatório. Os relatórios vêm no passo 4.
 
+#### Quando o grafo vem fragmentado
+
+`analyze` reporta, além do número de comunidades, o tamanho do **maior
+componente** e a fração do grafo que ele cobre. Isto é o que distingue estrutura
+de ruído: contar comunidades não denuncia nada, porque o Leiden não junta o que
+o grafo já separou — cada componente isolado vira pelo menos uma comunidade.
+
+Coleta por termo produz isso em massa: a maioria dos atores aparece uma vez só e
+sai como díade solta. Uma comunidade de dois atores tem E-I −1,00 **por
+construção** — não existe aresta externa possível —, então o número parece
+"câmara de eco fechada" e não significa nada.
+
+```bash
+nabote dump --view amp --min-community 20   # esconde a cauda de díades
+nabote dump --view amp --community 195      # quem está nesta comunidade
+```
+
+A cauda escondida vira uma linha de resumo, para você nunca confundir "filtrei"
+com "não existe".
+
 Se o pacote não estiver instalado, prefixe com `PYTHONPATH=src`. Para instalar
 em modo editável: `pip install -e .` (aí o comando `nabote` fica disponível).
 
@@ -146,7 +166,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-39 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+110 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

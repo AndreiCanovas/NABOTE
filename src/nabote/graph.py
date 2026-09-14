@@ -42,6 +42,11 @@ DEFAULT_VIEW = "amp"
 # a ser opcional — o plano prevê graph-tool como saída, não banco de grafos.
 BETWEENNESS_MAX_NODES = 20_000
 
+# Componente com até três atores não é comunidade: é resíduo de amostragem.
+# Uma díade solta tem E-I obrigatoriamente −1 porque não existe aresta externa
+# possível — o número parece "câmara de eco fechada" e não significa nada.
+TRIVIAL_COMPONENT = 3
+
 
 def window_start_for(timestamp: str) -> str:
     """Segunda-feira da semana do timestamp, como 'YYYY-MM-DD'.
@@ -127,6 +132,31 @@ def load_graph(
     return graph, actor_ids
 
 
+def component_stats(graph: Any) -> dict[str, Any]:
+    """Fragmentação do grafo, medida em componentes fracamente conexos.
+
+    Contar comunidades sozinho engana. O Leiden não junta o que o grafo separou:
+    cada componente isolado vira pelo menos uma comunidade. Numa coleta por
+    termo, a maioria dos atores aparece uma vez só e sai como díade solta —
+    centenas de "comunidades" que são ruído de amostragem, não estrutura.
+
+    `core_share` é a métrica de saúde: fração dos atores dentro do maior
+    componente. Perto de 1 existe uma rede. Perto de 0 existe uma pilha de
+    cacos, e toda métrica relacional calculada em cima dela é local demais
+    para significar alguma coisa.
+    """
+    if graph.vcount() == 0:
+        return {"components": 0, "largest": 0, "core_share": 0.0, "trivial": 0}
+    sizes = graph.connected_components(mode="weak").sizes()
+    largest = max(sizes)
+    return {
+        "components": len(sizes),
+        "largest": largest,
+        "core_share": largest / graph.vcount(),
+        "trivial": sum(1 for size in sizes if size <= TRIVIAL_COMPONENT),
+    }
+
+
 def detect_communities(graph: Any) -> list[int]:
     """Leiden sobre a versão não-dirigida do grafo.
 
@@ -199,7 +229,7 @@ def analyze_window(
 
     if graph.vcount() == 0:
         return {"window_start": window_start, "scope": scope, "nodes": 0,
-                "edges": 0, "communities": 0}
+                "edges": 0, "communities": 0, **component_stats(graph)}
 
     membership = detect_communities(graph)
     metrics = compute_metrics(graph, membership)
@@ -244,5 +274,6 @@ def analyze_window(
         "window_start": window_start, "scope": scope,
         "nodes": graph.vcount(), "edges": graph.ecount(),
         "communities": len(sizes), "metrics": sorted(metrics),
+        **component_stats(graph),
         "computed_at": utcnow(),
     }

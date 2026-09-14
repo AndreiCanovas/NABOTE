@@ -178,7 +178,13 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 print(f"{window}  vazio para a visão {args.view}")
                 continue
             print(f"{window}  scope={r['scope']:<12} {r['nodes']:>5} nós  "
-                  f"{r['edges']:>6} arestas  {r['communities']:>3} comunidades")
+                  f"{r['edges']:>6} arestas  {r['communities']:>4} comunidades")
+            print(f"{'':12}  maior componente {r['largest']} nós "
+                  f"({r['core_share']:.0%} do grafo) · "
+                  f"{r['trivial']} componentes de até {graph.TRIVIAL_COMPONENT} atores")
+            if r["core_share"] < 0.5:
+                print(f"{'':12}  ATENÇÃO: menos da metade dos atores está no núcleo. "
+                      f"O grafo é uma pilha de cacos, não uma rede.")
         return 0
     finally:
         conn.close()
@@ -209,7 +215,8 @@ def cmd_dump(args: argparse.Namespace) -> int:
 
         print(f"janela {window}   visão {scope}\n")
 
-        rows = conn.execute("""
+        recorte = "" if args.community is None else " AND c.community_id = :com"
+        rows = conn.execute(f"""
             SELECT a.handle, a.platform_user_id AS did, a.tier,
                    MAX(CASE WHEN m.metric='pagerank'    THEN m.value END) pr,
                    MAX(CASE WHEN m.metric='in_degree_w' THEN m.value END) ind,
@@ -219,9 +226,14 @@ def cmd_dump(args: argparse.Namespace) -> int:
             JOIN actor a ON a.actor_id = m.actor_id
             LEFT JOIN actor_community c ON c.actor_id = m.actor_id
                  AND c.window_start = m.window_start AND c.scope = m.scope
-            WHERE m.window_start=? AND m.scope=?
-            GROUP BY a.actor_id ORDER BY pr DESC LIMIT ?
-        """, (window, scope, args.top)).fetchall()
+            WHERE m.window_start=:w AND m.scope=:s{recorte}
+            GROUP BY a.actor_id ORDER BY pr DESC LIMIT :n
+        """, {"w": window, "s": scope, "n": args.top,
+              "com": args.community}).fetchall()
+
+        if args.community is not None:
+            print(f"atores da comunidade #{args.community}"
+                  + ("" if rows else "  — vazia nesta visão") + "\n")
 
         print(f"{'ator':<34}{'tier':<6}{'com':<5}{'pagerank':>10}{'in-deg':>9}{'E-I':>8}")
         print("-" * 72)
@@ -230,12 +242,27 @@ def cmd_dump(args: argparse.Namespace) -> int:
             print(f"{nome[:33]:<34}{r['tier']:<6}{r['com'] if r['com'] is not None else '-':<5}"
                   f"{r['pr']:>10.4f}{r['ind']:>9.1f}{r['ei']:>8.2f}")
 
-        print("\ncomunidades")
-        for r in conn.execute(
+        todas = conn.execute(
             "SELECT community_id, size, ei_mean FROM community "
-            "WHERE window_start=? AND scope=? ORDER BY size DESC", (window, scope)):
+            "WHERE window_start=? AND scope=? ORDER BY size DESC",
+            (window, scope)).fetchall()
+        visiveis = [r for r in todas if r["size"] >= args.min_community]
+
+        print(f"\ncomunidades  ({len(todas)} no total)")
+        for r in visiveis[:args.top]:
             ei = f"{r['ei_mean']:+.2f}" if r["ei_mean"] is not None else "  -  "
-            print(f"  #{r['community_id']:<4} {r['size']:>4} atores   E-I médio {ei}")
+            nota = "  (E-I mecânico)" if r["size"] <= graph.TRIVIAL_COMPONENT else ""
+            print(f"  #{r['community_id']:<4} {r['size']:>5} atores   "
+                  f"E-I médio {ei}{nota}")
+
+        cauda = todas[len(visiveis[:args.top]):]
+        if cauda:
+            atores = sum(r["size"] for r in cauda)
+            maior = max(r["size"] for r in cauda)
+            print(f"  … + {len(cauda)} comunidades de até {maior} atores "
+                  f"({atores} atores no total)")
+            print(f"     comunidade de até {graph.TRIVIAL_COMPONENT} atores tem E-I "
+                  f"−1,00 por construção: não existe aresta externa possível.")
 
         print("\narestas mais pesadas")
         for r in conn.execute("""
@@ -303,6 +330,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
                                   "view": args.view}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
+                            "min_community": 1, "community": None,
                             "view": args.view, "top": args.top}),
     ]
     for name, func, extra in steps:
@@ -545,6 +573,11 @@ def build_parser() -> argparse.ArgumentParser:
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
+    d.add_argument("--min-community", type=int, default=1, metavar="N",
+                   help="esconde comunidades com menos de N atores; a cauda vira "
+                        "uma linha de resumo (padrão: 1, mostra todas)")
+    d.add_argument("--community", type=int, default=None, metavar="ID",
+                   help="lista só os atores desta comunidade")
 
     lx = sub.add_parser("load-x", help="carrega base histórica do X (parquet em zip)")
     lx.add_argument("path", help="caminho do .zip")

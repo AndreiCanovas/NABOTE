@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from nabote import db, graph, ingest  # noqa: E402
-from synthetic import ListSource, did, planted_communities  # noqa: E402
+from synthetic import (  # noqa: E402
+    ListSource, did, planted_communities, scattered_dyads)
 
 
 class TestWindow(unittest.TestCase):
@@ -229,6 +230,92 @@ class TestMetrics(GraphTestCase):
         scopes = {r["scope"] for r in self.conn.execute(
             "SELECT DISTINCT scope FROM actor_metric")}
         self.assertEqual(scopes, {"amp", "reply"})
+
+
+class TestComponentStats(unittest.TestCase):
+    """Fragmentação: a diferença entre uma rede e uma pilha de cacos.
+
+    A base histórica do X, amostrada por termo, produziu 578 comunidades — quase
+    todas com dois ou três atores. Contar comunidades não denuncia isso; contar
+    componentes sim.
+    """
+
+    def _grafo(self, n: int, arestas: list[tuple[int, int]]):
+        import igraph
+        g = igraph.Graph(directed=True)
+        g.add_vertices(n)
+        g.add_edges(arestas)
+        g.es["weight"] = [1.0] * len(arestas)
+        return g
+
+    def test_grafo_vazio_nao_quebra(self):
+        self.assertEqual(graph.component_stats(self._grafo(0, [])),
+                         {"components": 0, "largest": 0, "core_share": 0.0,
+                          "trivial": 0})
+
+    def test_separa_nucleo_de_cauda(self):
+        # ciclo de 5 + duas díades soltas
+        g = self._grafo(9, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0), (5, 6), (7, 8)])
+        s = graph.component_stats(g)
+        self.assertEqual(s["components"], 3)
+        self.assertEqual(s["largest"], 5)
+        self.assertAlmostEqual(s["core_share"], 5 / 9)
+        self.assertEqual(s["trivial"], 2)
+
+    def test_componente_e_fraco_nao_forte(self):
+        """a→b ←c é UM componente. Se fosse forte seriam três, e toda coleta
+        real — onde ninguém retuíta de volta — pareceria totalmente fragmentada."""
+        self.assertEqual(
+            graph.component_stats(self._grafo(3, [(0, 1), (2, 1)]))["components"], 1)
+
+    def test_ei_da_diade_e_mecanico(self):
+        """−1,00 numa díade não é câmara de eco: é aritmética. Não existe aresta
+        externa possível quando a comunidade é o componente inteiro."""
+        g = self._grafo(2, [(0, 1)])
+        self.assertEqual(graph.ei_index(g, [0, 0]), [-1.0, -1.0])
+
+
+class TestFragmentacaoNoPipeline(GraphTestCase):
+    """O mesmo padrão da base real: núcleo pequeno afogado em díades soltas."""
+
+    DIADES = 40
+
+    def setUp(self):
+        super().setUp()
+        ingest.ingest(self.conn, ListSource(scattered_dyads(self.DIADES)),
+                      author_tier="C")
+        graph.aggregate_window(self.conn, self.window)
+        self.resultado = graph.analyze_window(self.conn, self.window, view="amp")
+
+    def test_cada_diade_vira_um_componente(self):
+        """As 40 díades são 40 componentes. O núcleo plantado acrescenta entre 1
+        (se as pontes ligarem tudo) e N_COMMUNITIES (se não ligarem nada)."""
+        nucleo = self.N_COMMUNITIES * self.PER_COMMUNITY
+        self.assertGreaterEqual(self.resultado["components"], self.DIADES + 1)
+        self.assertLessEqual(self.resultado["components"],
+                             self.DIADES + self.N_COMMUNITIES)
+        self.assertGreaterEqual(self.resultado["trivial"], self.DIADES)
+        self.assertLessEqual(self.resultado["largest"], nucleo)
+
+    def test_core_share_denuncia_o_que_a_contagem_de_comunidades_esconde(self):
+        """Comunidades demais pode ser estrutura rica ou lixo de amostragem.
+        `core_share` distingue: aqui o núcleo é minoria do grafo."""
+        self.assertGreater(self.resultado["communities"], self.N_COMMUNITIES)
+        self.assertLess(self.resultado["core_share"], 0.5)
+
+    def test_diades_nao_contaminam_o_nucleo(self):
+        """O ruído não pode mudar a comunidade de quem está no núcleo — ele vive
+        em outro componente. Se mudar, a agregação está juntando o que não deve."""
+        membros = {}
+        for d, verdade in self.truth.items():
+            row = self.conn.execute(
+                "SELECT community_id FROM actor_community c JOIN actor a "
+                "ON a.actor_id = c.actor_id WHERE a.platform_user_id = ? "
+                "AND c.scope = 'amp'", (d,)).fetchone()
+            membros.setdefault(verdade, set()).add(row["community_id"])
+        for verdade, encontrados in membros.items():
+            self.assertEqual(len(encontrados), 1,
+                             f"comunidade plantada {verdade} rachou em {encontrados}")
 
 
 class TestEmptyWindow(unittest.TestCase):

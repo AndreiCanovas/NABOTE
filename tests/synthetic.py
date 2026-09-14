@@ -97,6 +97,24 @@ def planted_communities(
     return events, truth
 
 
+def scattered_dyads(n: int = 40, seed: int = 11) -> list[dict[str, Any]]:
+    """Pares soltos: dois atores, uma aresta, zero ligação com o resto do grafo.
+
+    É o que a coleta por TERMO produz em massa — a maioria dos usuários aparece
+    uma vez só na amostra. Cada par vira um componente isolado e portanto uma
+    "comunidade" com E-I −1 que não informa nada. Sem isto plantado, nenhum
+    teste enxerga o problema que a base real do X exibiu de cara.
+    """
+    rng = random.Random(seed)
+    events: list[dict[str, Any]] = []
+    clock = BASE_TIME_US + DAY_US
+    for i in range(n):
+        clock += 1_000
+        events.append(_repost(f"did:plc:solto{i:04d}a", f"did:plc:solto{i:04d}b",
+                              clock, f"d{i:05d}{rng.randrange(10)}"))
+    return events
+
+
 def write_jsonl(events: list[dict[str, Any]], path) -> None:
     import json
     from pathlib import Path
