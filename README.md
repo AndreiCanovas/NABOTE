@@ -54,6 +54,26 @@ python3 --version      # precisa ser 3.11 ou maior
 git --version
 ```
 
+#### Sem pip? `discover` roda assim mesmo
+
+`discover` e `seeds` usam só a biblioteca padrão — nada para instalar:
+
+```bash
+PYTHONPATH=src python3 -m nabote.cli discover --file seeds/politica_br_nomes.txt
+```
+
+As dependências só entram depois: `websockets` para o `fetch` e `igraph` para
+o `analyze`. Quando chegar lá, no Debian/Ubuntu:
+
+```bash
+sudo apt install python3-pip python3-venv
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+O ambiente virtual evita mexer no Python do sistema, que em distribuições
+recentes recusa instalação global de qualquer jeito.
+
 ### Começando do zero — quatro comandos
 
 ```bash
