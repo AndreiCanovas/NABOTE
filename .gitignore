@@ -8,6 +8,12 @@ data/
 raw/
 exports/
 
+# bases externas — grandes demais para versionar (o dataset de 2023 tem 2,5 GB,
+# e o GitHub recusa arquivo acima de 100 MB)
+*.zip
+*.parquet
+datasets/
+
 # Python
 __pycache__/
 *.py[cod]
