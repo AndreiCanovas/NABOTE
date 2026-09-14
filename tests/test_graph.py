@@ -34,6 +34,18 @@ class TestWindow(unittest.TestCase):
         self.assertEqual(graph.window_start_for("2026-09-17T13:45:00+00:00"), "2026-09-14")
         self.assertEqual(graph.window_start_for("2026-09-17T13:45:00"), "2026-09-14")
 
+    def test_survives_every_fractional_second_shape(self):
+        """No Python 3.10 o fromisoformat só aceita 3 ou 6 casas decimais e recusa
+        o sufixo 'Z'. A API do X devolve as duas coisas, então o parser precisa
+        aguentar todas as formas — senão o projeto quebra em Ubuntu 22.04."""
+        for bruto in ["2026-09-17T13:45:00Z",
+                      "2026-09-17T13:45:00.000Z",
+                      "2026-09-17T13:45:00.123456Z",
+                      "2026-09-17T13:45:00.0000000Z",   # 7 casas: cai no fallback
+                      "2026-09-17T13:45:00.12Z"]:        # 2 casas: idem
+            with self.subTest(bruto=bruto):
+                self.assertEqual(graph.window_start_for(bruto), "2026-09-14")
+
 
 class GraphTestCase(unittest.TestCase):
     N_COMMUNITIES = 3

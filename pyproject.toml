@@ -2,7 +2,10 @@
 name = "nabote"
 version = "0.1.0"
 description = "Instrumento analítico interno de mapeamento do discurso público brasileiro"
-requires-python = ">=3.11"
+# 3.10 é o Python do Ubuntu 22.04. Nada no código exige 3.11 — a única
+# diferença que importava era fromisoformat não aceitar sufixo "Z" antes
+# do 3.11, e graph.window_start_for já normaliza isso antes de parsear.
+requires-python = ">=3.10"
 # Duas dependências, uma por passo. Ambas importadas só onde são usadas, para
 # que o resto do pacote continue em biblioteca padrão.
 #   websockets  passo 1 — cliente do Jetstream (só dentro de JetstreamSource)
