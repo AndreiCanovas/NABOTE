@@ -314,6 +314,45 @@ def cmd_cycle(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_discover(args: argparse.Namespace) -> int:
+    """Busca contas do Bluesky por NOME, para você escolher — não adivinha.
+
+    Uma lista de curadoria normalmente nasce como nomes de pessoas. No Bluesky
+    boa parte delas não tem conta, e homônimos e paródias são comuns. Este
+    comando mostra os candidatos; a escolha é sua, e depois vai para o arquivo
+    de sementes.
+    """
+    nomes = (identity.parse_name_file(Path(args.file).read_text(encoding="utf-8"))
+             if args.file else args.name)
+    if not nomes:
+        print("passe --name NOME (repetível) ou --file lista_de_nomes.txt", file=sys.stderr)
+        return 1
+
+    achou = faltou = 0
+    for nome in nomes:
+        print(f"\n{nome}")
+        try:
+            candidatos = identity.search_actors(nome, limit=args.limit)
+        except identity.ResolveError as exc:
+            print(f"  erro: {exc}", file=sys.stderr)
+            return 1
+        if not candidatos:
+            print("  — nenhuma conta encontrada no Bluesky")
+            faltou += 1
+            continue
+        achou += 1
+        for c in candidatos:
+            seg = f"{c['followers']:,}".replace(",", ".") if c["followers"] is not None else "?"
+            print(f"  {c['handle']:<32} {seg:>9} seg.  {c['display_name'][:28]}")
+            if c["description"]:
+                print(f"  {'':<32} {'':>9}       {c['description']}")
+
+    print(f"\n{achou} nomes com candidatos, {faltou} sem nenhum.")
+    print("Confira cada handle ANTES de colocar na lista de sementes — homônimo e\n"
+          "paródia são comuns, e coletar a conta errada atribui discurso a quem não disse.")
+    return 0
+
+
 class JetstreamDefaults:
     """Constantes lidas sem importar o cliente WebSocket."""
     host = "jetstream2.us-east.bsky.network"
@@ -364,6 +403,11 @@ def build_parser() -> argparse.ArgumentParser:
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
 
+    disc = sub.add_parser("discover", help="busca contas no Bluesky por nome de pessoa")
+    disc.add_argument("--name", action="append", help="nome a buscar (repetível)")
+    disc.add_argument("--file", help="arquivo com um nome por linha")
+    disc.add_argument("--limit", type=int, default=5, help="candidatos por nome")
+
     seeds = sub.add_parser("seeds", help="registra ou lista a lista curada de perfis")
     seeds.add_argument("--file", help="arquivo com um handle ou DID por linha")
     seeds.add_argument("--tier", default="A", choices=["A", "B"])
@@ -386,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("--kind=campanha exige --campaign RÓTULO")
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze,
-            "dump": cmd_dump, "seeds": cmd_seeds,
+            "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "cycle": cmd_cycle}[args.command](args)
 
 

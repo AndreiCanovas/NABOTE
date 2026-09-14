@@ -1,0 +1,52 @@
+# Política nacional — handles do X. Guardado para o passo 5 (agregador de X).
+# NÃO funciona no coletor de Bluesky: plataformas diferentes, handles diferentes.
+#
+# Curadoria balanceada entre campos, com camada de jornalismo fazendo ponte —
+# o formato certo para produzir um grafo com estrutura legível.
+#
+# `?` = handle não confirmado pelo curador; conferir antes de usar.
+
+# --- esquerda / governo ---
+LulaOficial
+?FernandoHaddad         # ministro da Fazenda — confirmar
+gleisi
+GuilhermeBoulos
+randolfeap
+ManuelaDavila
+?ErikaHilton            # confirmar
+
+# --- centro-esquerda / pauta ambiental ---
+MarinaSilva
+cirogomes
+
+# --- centro / centrão institucional ---
+?SimoneTebet            # confirmar
+?RodrigoPacheco         # confirmar
+?ArthurLira             # confirmar
+?GeraldoAlckmin         # confirmar
+
+# --- centro-direita liberal / governos estaduais ---
+tarcisiogdf
+KimKataguiri
+MBLivre
+?RonaldoCaiado          # confirmar
+?RomeuZema              # confirmar
+
+# --- direita bolsonarista ---
+jairbolsonaro
+BolsonaroSP             # Eduardo Bolsonaro
+FlavioBolsonaro
+nikolas_dm
+DamaresAlves
+SilasMalafaiaON
+
+# --- outsider populista e comentaristas ---
+pablomarcal
+Rconstantino
+realpfigueiredo
+?Monark                 # conta instável, suspensa/recriada — confirmar
+
+# --- jornalismo e economia (pontes entre campos) ---
+reinaldoazevedo
+miriamleitao
+ggreenwald

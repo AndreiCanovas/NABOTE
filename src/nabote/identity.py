@@ -22,6 +22,9 @@ from .db import utcnow
 RESOLVE_URL = (
     "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle={handle}"
 )
+SEARCH_URL = (
+    "https://public.api.bsky.app/xrpc/app.bsky.actor.searchActors?q={q}&limit={limit}"
+)
 TIMEOUT = 15
 
 
@@ -117,3 +120,40 @@ def seed_dids(conn: sqlite3.Connection, tiers: tuple[str, ...] = ("A", "B")) -> 
         (PLATFORM, *tiers),
     ).fetchall()
     return [r["platform_user_id"] for r in rows]
+
+
+def search_actors(name: str, limit: int = 5) -> list[dict]:
+    """Busca contas por nome. Devolve candidatos com handle, nome e seguidores.
+
+    Existe porque uma lista de curadoria normalmente nasce como NOMES, não como
+    handles — e, no caso do Bluesky, boa parte das pessoas simplesmente não tem
+    conta. Buscar e deixar a escolha com a pessoa é a única forma correta:
+    chutar o handle de uma figura pública e coletar a conta errada atribui
+    discurso a quem não disse.
+    """
+    url = SEARCH_URL.format(q=urllib.parse.quote(name), limit=limit)
+    try:
+        with urllib.request.urlopen(url, timeout=TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ResolveError(f"HTTP {exc.code} ao buscar '{name}'") from exc
+    except urllib.error.URLError as exc:
+        raise ResolveError(
+            f"sem acesso à API do Bluesky ao buscar '{name}' ({exc.reason})."
+        ) from exc
+
+    out = []
+    for actor in payload.get("actors", []):
+        out.append({
+            "handle": actor.get("handle", ""),
+            "did": actor.get("did", ""),
+            "display_name": actor.get("displayName") or "",
+            "followers": actor.get("followersCount"),
+            "description": (actor.get("description") or "").replace("\n", " ")[:90],
+        })
+    return out
+
+
+def parse_name_file(text: str) -> list[str]:
+    """Um nome por linha, `#` comenta. Igual ao arquivo de sementes, mas para busca."""
+    return parse_seed_file(text)

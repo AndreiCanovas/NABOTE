@@ -122,3 +122,35 @@ class TestRegisterSeeds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSearchParsing(unittest.TestCase):
+    """O que importa aqui é a extração dos campos, não o cliente HTTP."""
+
+    def test_extracts_the_fields_a_human_needs_to_choose(self):
+        import json as _json
+        from unittest.mock import patch
+
+        payload = _json.dumps({"actors": [
+            {"handle": "fulano.bsky.social", "did": "did:plc:a1",
+             "displayName": "Fulano de Tal", "followersCount": 12345,
+             "description": "linha um\nlinha dois"},
+            {"handle": "parodia.bsky.social", "did": "did:plc:a2"},
+        ]}).encode()
+
+        class FakeResponse:
+            def read(self): return payload
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+            found = identity.search_actors("Fulano")
+
+        self.assertEqual(len(found), 2)
+        self.assertEqual(found[0]["handle"], "fulano.bsky.social")
+        self.assertEqual(found[0]["followers"], 12345)
+        # quebra de linha na bio estragaria o alinhamento da tabela no terminal
+        self.assertNotIn("\n", found[0]["description"])
+        # conta sem os campos opcionais não pode quebrar a listagem
+        self.assertEqual(found[1]["display_name"], "")
+        self.assertIsNone(found[1]["followers"])

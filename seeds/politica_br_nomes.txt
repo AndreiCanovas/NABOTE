@@ -1,0 +1,56 @@
+# Política nacional — NOMES, para `nabote discover` buscar no Bluesky.
+#
+#   nabote discover --file seeds/politica_br_nomes.txt
+#
+# O comando mostra candidatos; VOCÊ confere e move os handles corretos para um
+# arquivo de sementes. Homônimo e paródia são comuns, e coletar a conta errada
+# atribui discurso a quem não disse.
+#
+# Expectativa honesta: boa parte destes nomes não tem conta ativa no Bluesky,
+# com ausência concentrada na direita. Isso é característica da plataforma,
+# não defeito da lista. Para esta lista como ela é, o caminho é o X (passo 5).
+
+# --- esquerda / governo ---
+Lula
+Fernando Haddad
+Gleisi Hoffmann
+Guilherme Boulos
+Randolfe Rodrigues
+Manuela d'Ávila
+Erika Hilton
+
+# --- centro-esquerda / pauta ambiental ---
+Marina Silva
+Ciro Gomes
+
+# --- centro / centrão institucional ---
+Simone Tebet
+Rodrigo Pacheco
+Arthur Lira
+Geraldo Alckmin
+
+# --- centro-direita liberal / governos estaduais ---
+Tarcísio de Freitas
+Kim Kataguiri
+Movimento Brasil Livre
+Ronaldo Caiado
+Romeu Zema
+
+# --- direita bolsonarista ---
+Jair Bolsonaro
+Eduardo Bolsonaro
+Flávio Bolsonaro
+Nikolas Ferreira
+Damares Alves
+Silas Malafaia
+
+# --- outsider populista e comentaristas ---
+Pablo Marçal
+Rodrigo Constantino
+Paulo Figueiredo
+Monark
+
+# --- jornalismo e economia (pontes entre campos) ---
+Reinaldo Azevedo
+Míriam Leitão
+Glenn Greenwald
