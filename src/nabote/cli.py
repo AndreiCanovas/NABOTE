@@ -150,6 +150,58 @@ def _windows(conn, args) -> list[str]:
     return found if args.all else found[-1:]
 
 
+def cmd_runs(args: argparse.Namespace) -> int:
+    """De onde veio cada aresta do grafo.
+
+    Sem isto, o grafo é anônimo: dá para medir comunidade, centralidade e E-I
+    sem nunca saber sobre O QUÊ as pessoas estavam falando. Coleta por termo faz
+    do termo parte do resultado — um grafo montado com o termo "bbb" e um
+    montado com "impeachment" não são a mesma rede vista duas vezes.
+    """
+    conn = db.connect(args.db)
+    try:
+        janela = graph.WINDOW_SQL.format(col="p.created_at")
+        linhas = conn.execute(f"""
+            SELECT r.run_id, r.campaign_label AS termo, r.query AS arquivo,
+                   r.kind, r.status, r.items_fetched,
+                   COUNT(p.post_id) AS posts,
+                   MIN(substr(p.created_at,1,10)) AS de,
+                   MAX(substr(p.created_at,1,10)) AS ate,
+                   GROUP_CONCAT(DISTINCT {janela}) AS janelas
+            FROM collection_run r
+            LEFT JOIN post p ON p.run_id = r.run_id
+            GROUP BY r.run_id ORDER BY r.run_id
+        """).fetchall()
+        if not linhas:
+            print("nenhum run registrado.", file=sys.stderr)
+            return 1
+
+        print(f"{'#':>4} {'termo':<30}{'posts':>9}  {'período':<24}status")
+        print("-" * 78)
+        for r in linhas:
+            periodo = f"{r['de']} … {r['ate']}" if r["de"] else "—"
+            print(f"{r['run_id']:>4} {(r['termo'] or '?')[:29]:<30}{r['posts']:>9,}"
+                  f"  {periodo:<24}{r['status']}".replace(",", "."))
+
+        print("\npor janela — qual termo alimentou qual semana")
+        por_janela: dict[str, list[tuple[str, int]]] = {}
+        for r in linhas:
+            for j in (r["janelas"] or "").split(","):
+                if j:
+                    por_janela.setdefault(j, []).append((r["termo"] or "?", r["posts"]))
+        for j in sorted(por_janela):
+            termos = sorted(por_janela[j], key=lambda t: -t[1])
+            total = sum(n for _, n in termos)
+            print(f"  {j}  {total:>9,} posts".replace(",", "."))
+            for termo, n in termos[:args.top]:
+                print(f"    {termo[:40]:<41}{n:>9,}".replace(",", "."))
+            if len(termos) > args.top:
+                print(f"    … + {len(termos) - args.top} outros termos")
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_aggregate(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     try:
@@ -619,6 +671,10 @@ def build_parser() -> argparse.ArgumentParser:
                            help="amp = repost+citação (padrão) · reply = respostas")
         return p
 
+    runs = sub.add_parser("runs", help="de onde veio cada aresta: termo por janela")
+    runs.add_argument("--top", type=int, default=10,
+                      help="termos por janela (padrão: 10)")
+
     _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
     _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"), com_view=True)
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
@@ -671,7 +727,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fetch" and args.kind == "campanha" and not args.campaign:
         build_parser().error("--kind=campanha exige --campaign RÓTULO")
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
-            "aggregate": cmd_aggregate, "analyze": cmd_analyze,
+            "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)

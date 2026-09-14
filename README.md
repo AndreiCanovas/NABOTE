@@ -129,7 +129,13 @@ quem entrou e saiu é informação.
 nabote aggregate --all                  # interaction → edge_window
 nabote analyze --all --view amp         # comunidades, PageRank, E-I
 nabote dump --view amp --top 15         # dump cru, para depurar
+nabote runs                             # de onde veio cada aresta
 ```
+
+`runs` mostra qual termo alimentou qual janela. Numa coleta por termo isso não é
+metadado burocrático: o termo é parte do resultado. Um grafo montado com "bbb23"
+e um montado com "impeachment" não são a mesma rede vista duas vezes, e sem a
+procedência comunidade, centralidade e E-I ficam calculáveis e ininterpretáveis.
 
 `dump` não é a camada de exportação — é instrumento de depuração, e existe
 justamente para você enxergar o que a coleta trouxe antes de existir qualquer
@@ -183,7 +189,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-127 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+131 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

@@ -233,6 +233,29 @@ class TestMetrics(GraphTestCase):
         self.assertEqual(scopes, {"amp", "reply"})
 
 
+class TestWindowSQL(unittest.TestCase):
+    def test_sql_e_python_concordam_todo_dia(self):
+        """`WINDOW_SQL` duplica a regra de `window_start_for` em SQL. Duplicata
+        que diverge é o pior tipo de bug: as duas metades do sistema passam a
+        discordar sobre qual semana é qual, e nada reclama."""
+        import sqlite3
+        from datetime import date, timedelta
+
+        conn = sqlite3.connect(":memory:")
+        consulta = "SELECT " + graph.WINDOW_SQL.format(col="?")
+        dia, fim, divergentes = date(2022, 11, 1), date(2024, 3, 1), []
+        while dia <= fim:
+            for hora in ("00:00:00", "13:45:06", "23:59:59"):
+                bruto = f"{dia.isoformat()}T{hora}Z"
+                # o SQL usa o mesmo placeholder duas vezes
+                sql = conn.execute(consulta, (bruto, bruto)).fetchone()[0]
+                if sql != graph.window_start_for(bruto):
+                    divergentes.append((bruto, sql, graph.window_start_for(bruto)))
+            dia += timedelta(days=1)
+        conn.close()
+        self.assertEqual(divergentes, [])
+
+
 class TestComponentStats(unittest.TestCase):
     """Fragmentação: a diferença entre uma rede e uma pilha de cacos.
 

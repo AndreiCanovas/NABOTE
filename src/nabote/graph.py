@@ -74,6 +74,14 @@ def window_start_for(timestamp: str) -> str:
     return (day - timedelta(days=day.weekday())).isoformat()
 
 
+# A MESMA regra de `window_start_for`, em SQL, para agregações que não cabem em
+# Python. Duplicar a definição é risco real de divergência silenciosa, então
+# existe teste comparando as duas para todo dia de vários meses.
+WINDOW_SQL = ("date(substr({col},1,10), '-' || "
+              "((CAST(strftime('%w', substr({col},1,10)) AS INTEGER) + 6) % 7)"
+              " || ' days')")
+
+
 def windows_present(conn: sqlite3.Connection) -> list[str]:
     """Janelas que têm interação registrada, da mais antiga para a mais nova."""
     rows = conn.execute("SELECT occurred_at FROM interaction").fetchall()
