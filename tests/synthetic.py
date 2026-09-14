@@ -115,6 +115,32 @@ def scattered_dyads(n: int = 40, seed: int = 11) -> list[dict[str, Any]]:
     return events
 
 
+def ambiguous_graph(seed: int = 3, blocks: int = 12, per_block: int = 10,
+                    p_in: float = 0.28, p_out: float = 0.035):
+    """Grafo igraph com estrutura AMBÍGUA de propósito, construído determinístico.
+
+    Blocos densos ligados por ruído suficiente para o Leiden hesitar: sem
+    semente fixa, doze execuções devolvem doze partições diferentes. É o único
+    jeito de um teste de determinismo valer alguma coisa — no grafo plantado
+    limpo o Leiden acerta sempre, com ou sem semente, e o teste passa vazio.
+    """
+    import igraph
+
+    rng = random.Random(seed)
+    n = blocks * per_block
+    edges = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            probability = p_in if i // per_block == j // per_block else p_out
+            if rng.random() < probability:
+                edges.append((i, j))
+    g = igraph.Graph(directed=True)
+    g.add_vertices(n)
+    g.add_edges(edges)
+    g.es["weight"] = [1.0] * len(edges)
+    return g
+
+
 def write_jsonl(events: list[dict[str, Any]], path) -> None:
     import json
     from pathlib import Path

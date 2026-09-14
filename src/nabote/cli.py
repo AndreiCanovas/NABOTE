@@ -190,6 +190,29 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         conn.close()
 
 
+# Faixas fixas de propósito: comparar a distribuição entre janelas só funciona
+# se as faixas não mudarem junto com o dado.
+_FAIXAS = ((500, "≥500"), (100, "100-499"), (10, "10-99"), (4, "4-9"), (0, "≤3"))
+
+
+def _distribuicao(tamanhos: list[int]) -> str:
+    """Histograma de tamanhos numa linha — responde 'isto é rede ou cacos?'.
+
+    Contar comunidades não distingue vinte grupos grandes de mil díades. A
+    distribuição distingue, e cabe numa linha.
+    """
+    if not tamanhos:
+        return "nenhuma comunidade"
+    contagem = dict.fromkeys((r for _, r in _FAIXAS), 0)
+    for tamanho in tamanhos:
+        for piso, rotulo in _FAIXAS:
+            if tamanho >= piso:
+                contagem[rotulo] += 1
+                break
+    return "distribuição  " + " · ".join(
+        f"{rotulo}: {n}" for _, rotulo in _FAIXAS if (n := contagem[rotulo]))
+
+
 def cmd_dump(args: argparse.Namespace) -> int:
     """Dump cru para depuração — não é a camada de exportação.
 
@@ -246,21 +269,32 @@ def cmd_dump(args: argparse.Namespace) -> int:
             "SELECT community_id, size, ei_mean FROM community "
             "WHERE window_start=? AND scope=? ORDER BY size DESC",
             (window, scope)).fetchall()
-        visiveis = [r for r in todas if r["size"] >= args.min_community]
+        tamanhos = [r["size"] for r in todas]
 
-        print(f"\ncomunidades  ({len(todas)} no total)")
-        for r in visiveis[:args.top]:
+        # `--min-community` é pedido explícito: quem pede "todas acima de 50"
+        # quer todas, não as 20 primeiras. `--top` só limita quando não há
+        # corte — senão o filtro engana silenciosamente.
+        if args.min_community > 1:
+            mostradas = [r for r in todas if r["size"] >= args.min_community]
+        else:
+            mostradas = todas[:args.top]
+
+        print(f"\ncomunidades  ({len(todas)} no total, {sum(tamanhos)} atores)")
+        print("  " + _distribuicao(tamanhos))
+        for r in mostradas:
             ei = f"{r['ei_mean']:+.2f}" if r["ei_mean"] is not None else "  -  "
             nota = "  (E-I mecânico)" if r["size"] <= graph.TRIVIAL_COMPONENT else ""
             print(f"  #{r['community_id']:<4} {r['size']:>5} atores   "
                   f"E-I médio {ei}{nota}")
 
-        cauda = todas[len(visiveis[:args.top]):]
+        cauda = todas[len(mostradas):]
         if cauda:
-            atores = sum(r["size"] for r in cauda)
-            maior = max(r["size"] for r in cauda)
-            print(f"  … + {len(cauda)} comunidades de até {maior} atores "
-                  f"({atores} atores no total)")
+            restantes = [r["size"] for r in cauda]
+            meio = sorted(restantes)[len(restantes) // 2]
+            print(f"  … + {len(cauda)} comunidades restantes: "
+                  f"{max(restantes)} a {min(restantes)} atores, mediana {meio}, "
+                  f"{sum(restantes)} atores no total")
+        if min(tamanhos, default=0) <= graph.TRIVIAL_COMPONENT:
             print(f"     comunidade de até {graph.TRIVIAL_COMPONENT} atores tem E-I "
                   f"−1,00 por construção: não existe aresta externa possível.")
 
@@ -591,8 +625,8 @@ def build_parser() -> argparse.ArgumentParser:
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
     d.add_argument("--min-community", type=int, default=1, metavar="N",
-                   help="esconde comunidades com menos de N atores; a cauda vira "
-                        "uma linha de resumo (padrão: 1, mostra todas)")
+                   help="lista TODAS as comunidades com N atores ou mais, "
+                        "ignorando --top; a cauda vira uma linha de resumo")
     d.add_argument("--community", type=int, default=None, metavar="ID",
                    help="lista só os atores desta comunidade")
 

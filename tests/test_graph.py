@@ -8,6 +8,7 @@ pesos e detecção funcionam em conjunto.
 
 from __future__ import annotations
 
+import random
 import sys
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from nabote import db, graph, ingest  # noqa: E402
 from synthetic import (  # noqa: E402
-    ListSource, did, planted_communities, scattered_dyads)
+    ListSource, ambiguous_graph, did, planted_communities, scattered_dyads)
 
 
 class TestWindow(unittest.TestCase):
@@ -282,7 +283,7 @@ class TestFragmentacaoNoPipeline(GraphTestCase):
 
     def setUp(self):
         super().setUp()
-        ingest.ingest(self.conn, ListSource(scattered_dyads(self.DIADES)),
+        ingest.ingest(self.conn, ListSource(scattered_dyads(self.DIADES), "diades"),
                       author_tier="C")
         graph.aggregate_window(self.conn, self.window)
         self.resultado = graph.analyze_window(self.conn, self.window, view="amp")
@@ -316,6 +317,156 @@ class TestFragmentacaoNoPipeline(GraphTestCase):
         for verdade, encontrados in membros.items():
             self.assertEqual(len(encontrados), 1,
                              f"comunidade plantada {verdade} rachou em {encontrados}")
+
+
+class TestNumeracaoDeComunidade(unittest.TestCase):
+    """O número da comunidade precisa significar alguma coisa.
+
+    O Leiden é heurístico e aleatório: sem semente fixa, a mesma janela
+    analisada duas vezes devolve números diferentes. Qualquer relatório que cite
+    "comunidade #197" vira ficção, e a série temporal compara coisas distintas
+    sem avisar.
+    """
+
+    N_COMMUNITIES = 3
+    PER_COMMUNITY = 8
+    DIADES = 15
+
+    def setUp(self):
+        """As díades entram ANTES do núcleo, de propósito.
+
+        O Leiden rotula as comunidades mais ou menos na ordem em que os nós
+        aparecem. Ingerindo o núcleo primeiro, os rótulos crus já sairiam
+        ordenados por tamanho e o teste passaria mesmo sem renumeração alguma —
+        que foi exatamente o que aconteceu na primeira versão deste teste.
+        """
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "n.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        ingest.ingest(self.conn, ListSource(scattered_dyads(self.DIADES), "diades"),
+                      author_tier="C")
+        events, _ = planted_communities(n_communities=self.N_COMMUNITIES,
+                                        per_community=self.PER_COMMUNITY)
+        ingest.ingest(self.conn, ListSource(events, "nucleo"), author_tier="A")
+        self.window = graph.windows_present(self.conn)[0]
+        graph.aggregate_window(self.conn, self.window)
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _particao(self) -> dict[str, int]:
+        graph.analyze_window(self.conn, self.window, view="amp")
+        return {r["platform_user_id"]: r["community_id"] for r in self.conn.execute(
+            "SELECT a.platform_user_id, c.community_id FROM actor_community c "
+            "JOIN actor a ON a.actor_id = c.actor_id WHERE c.scope = 'amp'")}
+
+    def test_reanalisar_devolve_a_mesma_numeracao(self):
+        primeira = self._particao()
+        for _ in range(3):
+            self.assertEqual(self._particao(), primeira)
+
+    def test_numeracao_segue_o_tamanho(self):
+        """#0 é a maior, e o tamanho nunca volta a subir conforme o ID cresce.
+        Assim "#3" carrega informação — é a quarta maior — em vez de ser um
+        rótulo interno do algoritmo vazando para o relatório."""
+        self._particao()
+        tamanhos = [r["size"] for r in self.conn.execute(
+            "SELECT size FROM community WHERE scope = 'amp' ORDER BY community_id")]
+        self.assertEqual(tamanhos[0], max(tamanhos))
+        self.assertEqual(tamanhos, sorted(tamanhos, reverse=True))
+        self.assertGreater(tamanhos[0], tamanhos[-1], "tamanhos todos iguais: "
+                           "o teste não distingue numeração ordenada de acaso")
+
+    def test_ids_sao_contiguos_a_partir_de_zero(self):
+        """Buraco na numeração denuncia renumeração mal feita — e vira
+        `--community 5` devolvendo lista vazia sem explicação."""
+        self._particao()
+        ids = [r["community_id"] for r in self.conn.execute(
+            "SELECT community_id FROM community WHERE scope = 'amp' "
+            "ORDER BY community_id")]
+        self.assertEqual(ids, list(range(len(ids))))
+
+
+class TestDeterminismo(unittest.TestCase):
+    """Num grafo AMBÍGUO — o único onde a semente importa.
+
+    Sem semente, este grafo devolve uma partição diferente a cada execução; o
+    teste falha imediatamente se alguém remover o `_rng`. No grafo plantado
+    limpo o Leiden acerta sempre, então lá o mesmo teste passaria vazio.
+    """
+
+    RODADAS = 12
+
+    def test_leiden_sem_semente_de_fato_oscila(self):
+        """Valida o próprio teste: se este grafo parar de ser ambíguo, o teste
+        de determinismo abaixo vira decoração e ninguém percebe."""
+        g = ambiguous_graph().as_undirected(combine_edges="sum")
+        vistas = {tuple(g.community_leiden(objective_function="modularity",
+                                           weights="weight").membership)
+                  for _ in range(self.RODADAS)}
+        self.assertGreater(len(vistas), 1,
+                           "grafo deixou de ser ambíguo; o teste de determinismo "
+                           "não prova mais nada")
+
+    def test_detect_communities_e_estavel(self):
+        g = ambiguous_graph()
+        vistas = {tuple(graph.detect_communities(g)) for _ in range(self.RODADAS)}
+        self.assertEqual(len(vistas), 1)
+
+    def test_rng_devolve_o_gerador_de_antes(self):
+        """Mexer no `random` global e não devolver contamina o resto do processo
+        — inclusive qualquer amostragem que venha depois."""
+        import igraph
+        marcador = random.Random(99)
+        igraph.set_random_number_generator(marcador)
+        with graph._rng():
+            pass
+        igraph.set_random_number_generator(marcador)  # não deve explodir
+        g = ambiguous_graph(blocks=3, per_block=5)
+        antes = tuple(graph.detect_communities(g))
+        random.seed(12345)
+        self.assertEqual(tuple(graph.detect_communities(g)), antes,
+                         "detect_communities passou a depender do random global")
+
+
+class TestCursorPorFonte(unittest.TestCase):
+    def test_fontes_homonimas_se_canibalizam(self):
+        """O cursor é por NOME de fonte. Duas fontes com o mesmo nome fazem a
+        segunda retomar de onde a primeira parou — e sumir com os eventos mais
+        antigos sem erro nenhum. Documentado aqui porque custou um teste que
+        parecia verde e estava vazio."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "c.db")
+            db.migrate(conn, ROOT / "migrations")
+            tardios = scattered_dyads(5)
+            cedo, _ = planted_communities(n_communities=2, per_community=4)
+            self.assertGreater(tardios[0]["time_us"], cedo[-1]["time_us"],
+                               "o cenário exige que os tardios venham depois")
+
+            ingest.ingest(conn, ListSource(tardios, "mesma"), author_tier="C")
+            ingest.ingest(conn, ListSource(cedo, "mesma"), author_tier="A")
+            engolidos = conn.execute("SELECT COUNT(*) AS n FROM interaction").fetchone()["n"]
+
+            ingest.ingest(conn, ListSource(cedo, "outra"), author_tier="A")
+            completos = conn.execute("SELECT COUNT(*) AS n FROM interaction").fetchone()["n"]
+            conn.close()
+
+        self.assertEqual(engolidos, len(tardios), "os eventos antigos deveriam ter sumido")
+        self.assertGreater(completos, engolidos, "com nome próprio, entram todos")
+
+
+class TestRelabel(unittest.TestCase):
+    def test_ordena_por_tamanho_decrescente(self):
+        # rótulos originais: 7 aparece 1×, 3 aparece 3×, 5 aparece 2×
+        novo = graph._relabel_by_size([7, 3, 3, 5, 3, 5])
+        self.assertEqual(novo, [2, 0, 0, 1, 0, 1])
+
+    def test_empate_e_desfeito_pelo_primeiro_no(self):
+        """Empate resolvido por acaso reintroduz exatamente o problema que a
+        renumeração existe para eliminar."""
+        self.assertEqual(graph._relabel_by_size([9, 9, 4, 4]), [0, 0, 1, 1])
+        self.assertEqual(graph._relabel_by_size([4, 4, 9, 9]), [0, 0, 1, 1])
 
 
 class TestEmptyWindow(unittest.TestCase):

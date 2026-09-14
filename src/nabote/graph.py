@@ -22,7 +22,9 @@ Gramática de escopo:
 
 from __future__ import annotations
 
+import random
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -41,6 +43,12 @@ DEFAULT_VIEW = "amp"
 # Betweenness é O(V·E). Acima disto o cálculo deixa de ser instantâneo e passa
 # a ser opcional — o plano prevê graph-tool como saída, não banco de grafos.
 BETWEENNESS_MAX_NODES = 20_000
+
+# O Leiden é heurístico e usa aleatoriedade: rodar duas vezes sobre o MESMO
+# grafo devolve partições diferentes, e portanto números de comunidade
+# diferentes. Sem semente fixa, "comunidade #197" não quer dizer nada de uma
+# execução para a outra — e qualquer relatório que cite um número vira ficção.
+LEIDEN_SEED = 20260914
 
 # Componente com até três atores não é comunidade: é resíduo de amostragem.
 # Uma díade solta tem E-I obrigatoriamente −1 porque não existe aresta externa
@@ -157,8 +165,45 @@ def component_stats(graph: Any) -> dict[str, Any]:
     }
 
 
+@contextmanager
+def _rng(seed: int = LEIDEN_SEED):
+    """Aleatoriedade determinística só durante o Leiden.
+
+    Mexer no `random` global do processo seria grosseiro — outra parte do
+    programa pode depender dele. O igraph aceita um gerador próprio, então
+    trocamos, usamos e devolvemos.
+    """
+    import igraph
+
+    igraph.set_random_number_generator(random.Random(seed))
+    try:
+        yield
+    finally:
+        igraph.set_random_number_generator(random)
+
+
+def _relabel_by_size(membership: list[int]) -> list[int]:
+    """Renumera comunidades por tamanho: #0 é a maior.
+
+    O rótulo que o Leiden devolve é arbitrário. Ordenar por tamanho faz o
+    número carregar significado — "#0" é sempre a maior comunidade da janela —
+    e mantém a numeração estável quando só a ordem interna do algoritmo muda.
+    Empate é desfeito pelo menor índice de nó, para não reintroduzir acaso.
+
+    Isto NÃO resolve identidade entre janelas: comunidade que cresce ou encolhe
+    troca de posição. Rastrear a mesma comunidade ao longo do tempo é
+    casamento por sobreposição de membros, e é outro problema.
+    """
+    grupos: dict[int, list[int]] = {}
+    for node, community in enumerate(membership):
+        grupos.setdefault(community, []).append(node)
+    ordem = sorted(grupos.items(), key=lambda kv: (-len(kv[1]), kv[1][0]))
+    novo = {antigo: i for i, (antigo, _) in enumerate(ordem)}
+    return [novo[c] for c in membership]
+
+
 def detect_communities(graph: Any) -> list[int]:
-    """Leiden sobre a versão não-dirigida do grafo.
+    """Leiden sobre a versão não-dirigida do grafo, renumerado por tamanho.
 
     Detecção de comunidade por modularidade é definida para grafos não
     dirigidos; a conversão soma os pesos das duas direções. Isso é padrão e
@@ -170,10 +215,11 @@ def detect_communities(graph: Any) -> list[int]:
     if graph.ecount() == 0:
         return list(range(graph.vcount()))
     undirected = graph.as_undirected(combine_edges="sum")
-    clusters = undirected.community_leiden(
-        objective_function="modularity", weights="weight"
-    )
-    return list(clusters.membership)
+    with _rng():
+        clusters = undirected.community_leiden(
+            objective_function="modularity", weights="weight"
+        )
+    return _relabel_by_size(list(clusters.membership))
 
 
 def ei_index(graph: Any, membership: list[int]) -> list[float]:

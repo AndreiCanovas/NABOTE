@@ -30,8 +30,9 @@ class DumpTestCase(unittest.TestCase):
         conn = db.connect(self.path)
         db.migrate(conn, ROOT / "migrations")
         events, _ = planted_communities(n_communities=3, per_community=8)
-        ingest.ingest(conn, ListSource(events), author_tier="A")
-        ingest.ingest(conn, ListSource(scattered_dyads(30)), author_tier="C")
+        ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
+        ingest.ingest(conn, ListSource(scattered_dyads(30), "diades"),
+                      author_tier="C")
         self.window = graph.windows_present(conn)[0]
         graph.aggregate_window(conn, self.window)
         for view in ("amp", "reply"):
@@ -83,9 +84,9 @@ class TestArestasRespeitamAVisao(DumpTestCase):
 class TestFiltroDeComunidade(DumpTestCase):
     def test_min_community_esconde_a_cauda_e_a_declara(self):
         saida = self.dump(min_community=5, top=50)
-        self.assertNotIn("(E-I mecânico)", saida)
-        self.assertIn("comunidades de até", saida)
-        self.assertIn("atores no total)", saida)
+        self.assertNotIn("(E-I mecânico)  ", saida)
+        self.assertIn("comunidades restantes", saida)
+        self.assertIn("atores no total", saida)
 
     def test_cauda_resumida_bate_com_o_total(self):
         """O resumo tem de fechar com a contagem: mostradas + cauda = todas."""
@@ -94,6 +95,21 @@ class TestFiltroDeComunidade(DumpTestCase):
         mostradas = saida.count(" atores   E-I médio ")
         cauda = int(saida.split("… + ")[1].split(" comunidades")[0])
         self.assertEqual(mostradas + cauda, total)
+
+    def test_min_community_nao_e_cortado_pelo_top(self):
+        """Quem pede 'todas acima de 4' quer todas. `--top 1` limita atores e
+        arestas, nunca o corte explícito de comunidade — filtro que engana
+        silenciosamente é pior que filtro nenhum."""
+        saida = self.dump(min_community=4, top=1)
+        listadas = saida.count(" atores   E-I médio ")
+        self.assertEqual(listadas, 3, "as 3 comunidades plantadas têm 8 atores cada")
+
+    def test_distribuicao_separa_rede_de_cacos(self):
+        """Uma linha tem de responder 'isto é rede ou pilha de cacos?'."""
+        saida = self.dump()
+        linha = [l for l in saida.splitlines() if "distribuição" in l][0]
+        self.assertIn("4-9: 3", linha)      # as comunidades plantadas
+        self.assertIn("≤3: 30", linha)      # as díades soltas
 
     def test_community_recorta_a_lista_de_atores(self):
         saida = self.dump(community=0, top=50)

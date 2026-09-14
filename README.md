@@ -148,12 +148,29 @@ construção** — não existe aresta externa possível —, então o número pa
 "câmara de eco fechada" e não significa nada.
 
 ```bash
-nabote dump --view amp --min-community 20   # esconde a cauda de díades
-nabote dump --view amp --community 195      # quem está nesta comunidade
+nabote dump --view amp --min-community 50   # TODAS as comunidades com 50+ atores
+nabote dump --view amp --community 0        # quem está na maior comunidade
 ```
 
-A cauda escondida vira uma linha de resumo, para você nunca confundir "filtrei"
-com "não existe".
+`--min-community` ignora o `--top` de propósito: quem pede "todas acima de 50"
+quer todas. A cauda escondida vira uma linha de resumo, para você nunca
+confundir "filtrei" com "não existe", e o `dump` abre com um histograma de
+tamanhos — é a linha que responde "isto é uma rede ou uma pilha de cacos?".
+
+#### O número da comunidade
+
+`#0` é sempre a **maior** comunidade da janela, `#1` a segunda, e assim por
+diante. Duas coisas garantem isso:
+
+- a semente do Leiden é fixa (`graph.LEIDEN_SEED`), porque o algoritmo é
+  heurístico e aleatório — sem semente, a mesma janela analisada duas vezes
+  devolve números diferentes e qualquer relatório que cite "#197" vira ficção;
+- as comunidades são renumeradas por tamanho depois da detecção, com empate
+  desfeito pelo menor índice de nó.
+
+Isto **não** resolve identidade entre janelas: uma comunidade que cresce troca
+de posição de uma semana para a outra. Rastrear a mesma comunidade ao longo do
+tempo é casamento por sobreposição de membros, e é outro problema.
 
 Se o pacote não estiver instalado, prefixe com `PYTHONPATH=src`. Para instalar
 em modo editável: `pip install -e .` (aí o comando `nabote` fica disponível).
@@ -166,7 +183,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-110 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+127 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num
