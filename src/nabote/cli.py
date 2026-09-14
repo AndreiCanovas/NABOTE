@@ -264,18 +264,35 @@ def cmd_dump(args: argparse.Namespace) -> int:
             print(f"     comunidade de até {graph.TRIVIAL_COMPONENT} atores tem E-I "
                   f"−1,00 por construção: não existe aresta externa possível.")
 
-        print("\narestas mais pesadas")
-        for r in conn.execute("""
+        # A lista de arestas TEM de respeitar a visão. Mostrar uma citação sob
+        # `--view amp` é mentira barata: o grafo analisado não a contém, e quem
+        # lê o dump conclui coisa errada sobre o que produziu as comunidades.
+        tipos = graph.VIEWS[args.view]
+        marcadores = ",".join("?" * len(tipos))
+        print(f"\narestas mais pesadas da visão {args.view} "
+              f"({' + '.join(tipos)})")
+        for r in conn.execute(f"""
             SELECT s.handle AS sh, s.platform_user_id AS sd,
                    d.handle AS dh, d.platform_user_id AS dd, e.kind, e.weight
             FROM edge_window e
             JOIN actor s ON s.actor_id=e.src_actor_id
             JOIN actor d ON d.actor_id=e.dst_actor_id
-            WHERE e.window_start=? AND e.scope=?
+            WHERE e.window_start=? AND e.scope=? AND e.kind IN ({marcadores})
             ORDER BY e.weight DESC LIMIT ?
-        """, (window, args.scope, args.top)).fetchall():
+        """, (window, args.scope, *tipos, args.top)).fetchall():
             print(f"  {(r['sh'] or r['sd'])[:26]:<27} -{r['kind']:>8}-> "
                   f"{(r['dh'] or r['dd'])[:26]:<27} {r['weight']:.0f}")
+
+        # …e o que a visão deixou de fora precisa ficar visível, senão filtrar
+        # vira esconder.
+        totais = conn.execute(
+            "SELECT kind, SUM(weight) AS w FROM edge_window "
+            "WHERE window_start=? AND scope=? GROUP BY kind ORDER BY w DESC",
+            (window, args.scope)).fetchall()
+        print("\npeso total por tipo na janela inteira")
+        print("  " + " · ".join(
+            f"{r['kind']} {r['w']:.0f}" + ("" if r["kind"] in tipos else " (fora da visão)")
+            for r in totais))
         return 0
     finally:
         conn.close()
