@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, db, ingest
+from . import __version__, db, graph, ingest
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -130,6 +130,119 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _windows(conn, args) -> list[str]:
+    if args.window:
+        return [args.window]
+    found = graph.windows_present(conn)
+    if not found:
+        return []
+    return found if args.all else found[-1:]
+
+
+def cmd_aggregate(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    try:
+        windows = _windows(conn, args)
+        if not windows:
+            print("nenhuma interação no banco. Rode `fetch` antes.", file=sys.stderr)
+            return 1
+        for window in windows:
+            n = graph.aggregate_window(conn, window, scope=args.scope)
+            print(f"{window}  {n:>6} arestas agregadas  (scope={args.scope})")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    try:
+        windows = _windows(conn, args)
+        if not windows:
+            print("nenhuma interação no banco. Rode `fetch` antes.", file=sys.stderr)
+            return 1
+        for window in windows:
+            r = graph.analyze_window(conn, window, view=args.view, edge_scope=args.scope)
+            if not r["nodes"]:
+                print(f"{window}  vazio para a visão {args.view}")
+                continue
+            print(f"{window}  scope={r['scope']:<12} {r['nodes']:>5} nós  "
+                  f"{r['edges']:>6} arestas  {r['communities']:>3} comunidades")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_dump(args: argparse.Namespace) -> int:
+    """Dump cru para depuração — não é a camada de exportação.
+
+    O plano prevê exatamente isto logo depois do passo 2: um jeito rápido de
+    enxergar o que a coleta trouxe, antes de existir qualquer relatório.
+    """
+    conn = db.connect(args.db)
+    try:
+        windows = _windows(conn, args)
+        if not windows:
+            print("nada a mostrar.", file=sys.stderr)
+            return 1
+        window = windows[-1]
+        scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
+
+        head = conn.execute(
+            "SELECT COUNT(*) AS n FROM actor_metric WHERE window_start=? AND scope=?",
+            (window, scope)).fetchone()["n"]
+        if not head:
+            print(f"janela {window} sem métricas para scope={scope}. "
+                  f"Rode `analyze --view {args.view}`.", file=sys.stderr)
+            return 1
+
+        print(f"janela {window}   visão {scope}\n")
+
+        rows = conn.execute("""
+            SELECT a.handle, a.platform_user_id AS did, a.tier,
+                   MAX(CASE WHEN m.metric='pagerank'    THEN m.value END) pr,
+                   MAX(CASE WHEN m.metric='in_degree_w' THEN m.value END) ind,
+                   MAX(CASE WHEN m.metric='ei_index'    THEN m.value END) ei,
+                   c.community_id AS com
+            FROM actor_metric m
+            JOIN actor a ON a.actor_id = m.actor_id
+            LEFT JOIN actor_community c ON c.actor_id = m.actor_id
+                 AND c.window_start = m.window_start AND c.scope = m.scope
+            WHERE m.window_start=? AND m.scope=?
+            GROUP BY a.actor_id ORDER BY pr DESC LIMIT ?
+        """, (window, scope, args.top)).fetchall()
+
+        print(f"{'ator':<34}{'tier':<6}{'com':<5}{'pagerank':>10}{'in-deg':>9}{'E-I':>8}")
+        print("-" * 72)
+        for r in rows:
+            nome = r["handle"] or r["did"]
+            print(f"{nome[:33]:<34}{r['tier']:<6}{r['com'] if r['com'] is not None else '-':<5}"
+                  f"{r['pr']:>10.4f}{r['ind']:>9.1f}{r['ei']:>8.2f}")
+
+        print("\ncomunidades")
+        for r in conn.execute(
+            "SELECT community_id, size, ei_mean FROM community "
+            "WHERE window_start=? AND scope=? ORDER BY size DESC", (window, scope)):
+            ei = f"{r['ei_mean']:+.2f}" if r["ei_mean"] is not None else "  -  "
+            print(f"  #{r['community_id']:<4} {r['size']:>4} atores   E-I médio {ei}")
+
+        print("\narestas mais pesadas")
+        for r in conn.execute("""
+            SELECT s.handle AS sh, s.platform_user_id AS sd,
+                   d.handle AS dh, d.platform_user_id AS dd, e.kind, e.weight
+            FROM edge_window e
+            JOIN actor s ON s.actor_id=e.src_actor_id
+            JOIN actor d ON d.actor_id=e.dst_actor_id
+            WHERE e.window_start=? AND e.scope=?
+            ORDER BY e.weight DESC LIMIT ?
+        """, (window, args.scope, args.top)).fetchall():
+            print(f"  {(r['sh'] or r['sd'])[:26]:<27} -{r['kind']:>8}-> "
+                  f"{(r['dh'] or r['dd'])[:26]:<27} {r['weight']:.0f}")
+        return 0
+    finally:
+        conn.close()
+
+
 class JetstreamDefaults:
     """Constantes lidas sem importar o cliente WebSocket."""
     host = "jetstream2.us-east.bsky.network"
@@ -162,6 +275,21 @@ def build_parser() -> argparse.ArgumentParser:
                        help="tier dado a autores novos (use A numa coleta com --seeds)")
     fetch.add_argument("--no-resume", action="store_true",
                        help="ignora o cursor salvo e começa do zero")
+
+    def _janela(p, com_view=False):
+        p.add_argument("--window", help="janela YYYY-MM-DD (segunda-feira)")
+        p.add_argument("--all", action="store_true", help="todas as janelas com dado")
+        p.add_argument("--scope", default="all", help="'all' ou 'topic:<id>'")
+        if com_view:
+            p.add_argument("--view", default=graph.DEFAULT_VIEW, choices=sorted(graph.VIEWS),
+                           help="amp = repost+citação (padrão) · reply = respostas")
+        return p
+
+    _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
+    _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"), com_view=True)
+    d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
+                com_view=True)
+    d.add_argument("--top", type=int, default=15)
     return parser
 
 
@@ -169,7 +297,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "fetch" and args.kind == "campanha" and not args.campaign:
         build_parser().error("--kind=campanha exige --campaign RÓTULO")
-    return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch}[args.command](args)
+    return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
+            "aggregate": cmd_aggregate, "analyze": cmd_analyze,
+            "dump": cmd_dump}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -136,6 +136,37 @@ class TestIngestGraph(IngestTestCase):
             (target["actor_id"],)).fetchone()["n"]
         self.assertEqual(recebidas, 3)
 
+    def test_tier_rises_when_a_target_later_turns_out_to_be_an_author(self):
+        """A ordem de chegada dos eventos é aleatória; o tier não pode depender dela."""
+        conn = db.connect(Path(self._tmp.name) / "ordem.db")
+        db.migrate(conn, ROOT / "migrations")
+        run = ingest.start_run(conn, "t")
+        stats = ingest.Stats()
+
+        # primeiro C aparece só como alvo de um repost de B
+        ingest.handle_event(conn, run, {
+            "did": B, "time_us": 1, "kind": "commit", "commit": {
+                "operation": "create", "collection": "app.bsky.feed.repost", "rkey": "r1",
+                "record": {"subject": {"uri": f"at://{C}/app.bsky.feed.post/x"}}}},
+            stats, author_tier="A")
+        self.assertEqual(conn.execute(
+            "SELECT tier FROM actor WHERE platform_user_id=?", (C,)).fetchone()["tier"], "C")
+
+        # depois um post do próprio C é coletado: ele estava na lista o tempo todo
+        ingest.handle_event(conn, run, {
+            "did": C, "time_us": 2, "kind": "commit", "commit": {
+                "operation": "create", "collection": "app.bsky.feed.post", "rkey": "q1",
+                "record": {"text": "oi", "createdAt": "2026-09-15T10:00:00Z"}}},
+            stats, author_tier="A")
+        self.assertEqual(conn.execute(
+            "SELECT tier FROM actor WHERE platform_user_id=?", (C,)).fetchone()["tier"], "A")
+
+        # e nunca desce de volta ao virar alvo outra vez
+        ingest.upsert_actor(conn, C, "C", stats)
+        self.assertEqual(conn.execute(
+            "SELECT tier FROM actor WHERE platform_user_id=?", (C,)).fetchone()["tier"], "A")
+        conn.close()
+
     def test_authors_get_seed_tier_targets_do_not(self):
         self.assertEqual(self._actor(A)["tier"], "A")
         self.assertEqual(self._actor(B)["tier"], "A")

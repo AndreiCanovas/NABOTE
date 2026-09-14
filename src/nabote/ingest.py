@@ -47,24 +47,40 @@ def _iso_from_time_us(time_us: int) -> str:
     )
 
 
+# C < B < A. Só serve para comparar, nunca para rebaixar.
+_TIER_RANK = {"C": 0, "B": 1, "A": 2}
+
+
 def upsert_actor(
     conn: sqlite3.Connection, did: str, tier: str, stats: Stats | None = None
 ) -> int:
     """Devolve o actor_id, criando o ator se for a primeira vez que o vemos.
 
-    O `tier` só se aplica na criação. Um ator já conhecido nunca é rebaixado
-    por aparecer como alvo de aresta: promoção e rebaixamento são decisão de
-    curadoria (frente 02), não efeito colateral da ingestão.
+    Tier SOBE, nunca desce. Um ator que já apareceu como alvo de aresta (C) e
+    depois tem post próprio coletado é, por definição, alguém que está na sua
+    lista de coleta — e precisa virar A/B mesmo tendo sido visto como alvo
+    primeiro. Sem isso, o tier passaria a depender da ordem de chegada dos
+    eventos, que é aleatória.
+
+    O caminho inverso nunca acontece aqui: rebaixar é decisão de curadoria
+    (frente 02), não efeito colateral da ingestão.
     """
     row = conn.execute(
-        "SELECT actor_id FROM actor WHERE platform = ? AND platform_user_id = ?",
+        "SELECT actor_id, tier FROM actor WHERE platform = ? AND platform_user_id = ?",
         (PLATFORM, did),
     ).fetchone()
     if row:
-        conn.execute(
-            "UPDATE actor SET last_seen_at = ? WHERE actor_id = ?", (utcnow(), row[0])
-        )
-        return row[0]
+        if _TIER_RANK.get(tier, 0) > _TIER_RANK.get(row["tier"], 0):
+            conn.execute(
+                "UPDATE actor SET tier = ?, last_seen_at = ? WHERE actor_id = ?",
+                (tier, utcnow(), row["actor_id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE actor SET last_seen_at = ? WHERE actor_id = ?",
+                (utcnow(), row["actor_id"]),
+            )
+        return row["actor_id"]
 
     now = utcnow()
     cur = conn.execute(

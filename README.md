@@ -11,13 +11,13 @@ dependa de fato do instrumento. Toda decisão técnica aqui é subordinada a iss
 
 ---
 
-## Estado atual — passo 1 de 5
+## Estado atual — passo 2 de 5
 
 | Passo | O quê | Estado |
 |-------|-------|--------|
 | **0** | Schema, banco, migrações | ✅ feito |
-| **1** | Coleta (Bluesky Jetstream → `post` + `interaction`) | ✅ **feito** |
-| 2 | Grafo (`edge_window` + igraph: comunidades, PageRank, E-I) | a fazer |
+| **1** | Coleta (Bluesky Jetstream → `post` + `interaction`) | ✅ feito |
+| **2** | Grafo (`edge_window` + igraph: comunidades, PageRank, E-I) | ✅ **feito** |
 | 3 | Tópicos (embeddings, clustering, `post_topic`) | a fazer |
 | 4 | Exportação (radar semanal e dossiê sob encomenda) | a fazer |
 | 5 | Ligar o X (agregador terceiro na mesma interface de fonte) | a fazer |
@@ -63,6 +63,18 @@ curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle
 
 Sem `--seeds`, `fetch` consome o firehose global — centenas de eventos por
 segundo. Útil para conhecer o formato, inviável como coleta.
+
+### Do dado ao grafo
+
+```bash
+nabote aggregate --all                  # interaction → edge_window
+nabote analyze --all --view amp         # comunidades, PageRank, E-I
+nabote dump --view amp --top 15         # dump cru, para depurar
+```
+
+`dump` não é a camada de exportação — é instrumento de depuração, e existe
+justamente para você enxergar o que a coleta trouxe antes de existir qualquer
+relatório. Os relatórios vêm no passo 4.
 
 Se o pacote não estiver instalado, prefixe com `PYTHONPATH=src`. Para instalar
 em modo editável: `pip install -e .` (aí o comando `nabote` fica disponível).
@@ -120,6 +132,34 @@ disciplina humana não sobrevive a seis meses de uso.
    profunda sob demanda. Sem `kind`, um pico de volume é indistinguível de uma
    mudança na própria intensidade de coleta — erro que invalida a análise e é
    quase indetectável depois.
+
+### Duas visões do grafo, nunca misturadas
+
+| Visão | Arestas | Pergunta |
+|-------|---------|----------|
+| `amp` (padrão) | repost ×1,0 + citação ×0,8 | quem se alinha com quem |
+| `reply` | respostas | quem confronta quem |
+| `all` | tudo, ponderado | atenção total |
+
+Quem mais responde um ator costuma ser quem mais **discorda** dele. Somar
+resposta com repost produz comunidades sem sentido — é o erro analítico mais
+comum da área, e por isso a separação é o padrão, não uma opção.
+
+`tests/test_graph.py` planta comunidades conhecidas nos reposts e respostas
+que **cruzam** essas comunidades de propósito; depois verifica que o Leiden
+recupera a partição plantada nó a nó e que as duas visões dão partições
+diferentes. Se a separação deixar de valer, o teste quebra.
+
+**Escopo** tem gramática:
+
+```
+edge_window.scope    'all' | 'topic:<id>'           QUAIS posts entram
+actor_metric.scope   '<view>' | '<view>:topic:<id>' QUAL visão sobre eles
+```
+
+`edge_window` guarda **contagem**, não peso interpretado — a ponderação por
+tipo é aplicada ao montar o grafo. Mudar de ideia sobre quanto vale uma
+citação não obriga a reagregar nada.
 
 ### Camada de fonte
 
@@ -182,11 +222,26 @@ src/nabote/db.py             conexão, pragmas, migrações
 src/nabote/atproto.py        normalização de registros AT Protocol (puro, sem I/O)
 src/nabote/sources/          jetstream (rede) e fixture (arquivo), mesma interface
 src/nabote/ingest.py         evento → raw_payload → actor/post/interaction
-src/nabote/cli.py            init, status, fetch
+src/nabote/graph.py          edge_window, igraph, comunidades e métricas
+src/nabote/cli.py            init, status, fetch, aggregate, analyze, dump
 tests/test_schema.py         invariantes aplicados pelo banco
 tests/test_ingest.py         o que o parser deduz das arestas
+tests/test_graph.py          recuperação de comunidades plantadas
+tests/synthetic.py           gerador determinístico de grafo com gabarito
 seeds/exemplo.txt            formato da lista curada
 ```
+
+### Métricas do MVP
+
+`in_degree_w`, `out_degree_w`, `pagerank`, `ei_index` e `betweenness` — todas
+em segundos no volume previsto. Duas sutilezas que já estão tratadas:
+
+- **Betweenness trata peso como distância.** Aresta forte precisa virar caminho
+  curto, então o peso é invertido antes do cálculo. Sem isso o resultado sai com
+  o sentido trocado — e parece plausível, que é o pior tipo de erro.
+- **Detecção de comunidade roda sobre a versão não-dirigida.** Modularidade é
+  definida assim; a conversão soma os pesos das duas direções. A direção
+  continua valendo para PageRank e in-degree.
 
 Migrações seguem `NNN_descricao.sql` e são aplicadas em ordem, uma vez só,
 registradas em `schema_migrations`.
