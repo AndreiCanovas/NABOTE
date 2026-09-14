@@ -37,15 +37,36 @@ graça, sem uma linha de NLP escrita.
 
 Sem dependências externas no passo 0 — só a biblioteca padrão do Python 3.11+.
 
+### Começando do zero — quatro comandos
+
 ```bash
-python3 -m nabote.cli init      # cria o banco e aplica as migrações
-python3 -m nabote.cli status    # versão do schema, volume, custo acumulado
+pip install -e .
+nabote init
 
-# coleta a partir da fixture sintética — sem rede, determinística
-python3 -m nabote.cli fetch --fixture tests/fixtures/jetstream_sintetico.jsonl --author-tier A
+# escreva seus perfis em seeds/meus.txt (um handle por linha) e registre:
+nabote seeds --file seeds/meus.txt
 
-# coleta real do Bluesky, filtrando pela lista curada, com teto
-python3 -m nabote.cli fetch --seeds seeds/meus_perfis.txt --author-tier A --max-seconds 300
+# coleta + grafo + métricas + dump, num comando só:
+nabote cycle --max-seconds 300
+```
+
+`cycle` encadeia `fetch → aggregate → analyze → dump`. Rodar de novo retoma do
+cursor e recomputa a janela — pode chamar quantas vezes quiser.
+
+### Comandos
+
+```bash
+nabote seeds --file lista.txt   # resolve handles → DIDs e registra como tier A
+nabote seeds                    # lista as sementes registradas
+nabote status                   # schema, volume, custo acumulado
+nabote fetch --max-seconds 300  # só a coleta; usa as sementes do banco
+nabote fetch --global           # firehose inteiro, sem filtro (só para ver o formato)
+nabote aggregate --all          # interaction → edge_window
+nabote analyze --all --view amp # comunidades, PageRank, E-I
+nabote dump --view amp --top 20 # dump cru, para depuração
+
+# sem rede, com a fixture sintética:
+nabote fetch --fixture tests/fixtures/jetstream_sintetico.jsonl --author-tier A
 ```
 
 `fetch` salva o cursor a cada 250 eventos: se cair ou você der Ctrl-C, a próxima
@@ -55,14 +76,15 @@ o custo é zero, mas a mesma função vai servir para o X.
 
 ### Lista de sementes
 
-Um DID por linha, `#` comenta (veja `seeds/exemplo.txt`). Para resolver um handle:
+Um perfil por linha, `#` comenta (veja `seeds/exemplo.txt`). Aceita **handle**
+(`fulano.bsky.social`, `@fulano`, `fulano`, `jornal.com.br`) ou DID direto —
+`nabote seeds` resolve e guarda os dois. Handle muda, DID não; é o DID que
+filtra o firehose.
 
-```bash
-curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=NOME.bsky.social"
-```
+Um handle errado é reportado e **não derruba o resto da lista**.
 
-Sem `--seeds`, `fetch` consome o firehose global — centenas de eventos por
-segundo. Útil para conhecer o formato, inviável como coleta.
+Mantenha a lista versionada: a curadoria é o ativo do projeto, e o histórico de
+quem entrou e saiu é informação.
 
 ### Do dado ao grafo
 

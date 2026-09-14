@@ -1,9 +1,17 @@
-# Lista de sementes: um DID por linha, `#` comenta.
-# ATENÇÃO: os DIDs abaixo são INVENTADOS, para demonstrar o formato.
-# Substitua pelos DIDs reais dos perfis que você curou (frente 02 do plano).
+# Lista de sementes — um perfil por linha, `#` comenta.
 #
-# Para descobrir o DID de um handle:
-#   curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=NOME.bsky.social"
+# Aceita HANDLE (recomendado) ou DID:
+#   fulano.bsky.social
+#   @fulano.bsky.social      o @ é opcional
+#   fulano                   sem domínio vira fulano.bsky.social
+#   jornal.com.br            domínio próprio funciona
+#   did:plc:abc123           se você já tem o DID
+#
+# `nabote seeds --file <arquivo>` resolve os handles e registra tudo.
+# Handle que não existe é reportado e não derruba o resto da lista.
+#
+# Copie este arquivo, troque pelas suas escolhas curadas (frente 02 do plano)
+# e mantenha versionado: a lista de sementes é o ativo de curadoria do projeto.
 
-did:plc:exemplo0001seed   # exemplo-a.test
-did:plc:exemplo0002seed   # exemplo-b.test
+# --- exemplo (contas oficiais do próprio Bluesky, para testar o fluxo) ---
+bsky.app

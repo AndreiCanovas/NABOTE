@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, db, graph, ingest
+from . import __version__, db, graph, identity, ingest
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -94,7 +94,17 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             print(f"fonte    fixture {args.fixture}")
         else:
             from .sources import JetstreamSource
-            seeds = load_seeds(Path(args.seeds)) if args.seeds else []
+            if args.seeds:
+                seeds = load_seeds(Path(args.seeds))
+            elif getattr(args, "global_firehose", False):
+                seeds = []
+            else:
+                seeds = identity.seed_dids(conn)
+                if not seeds:
+                    print("nenhuma semente registrada. Rode `nabote seeds --file lista.txt`,\n"
+                          "ou passe --global para consumir o firehose inteiro.",
+                          file=sys.stderr)
+                    return 1
             source = JetstreamSource(host=args.host, wanted_dids=seeds)
             print(f"fonte    jetstream {args.host}")
             print(f"filtro   {len(seeds) or 'nenhum — firehose global'} "
@@ -243,6 +253,67 @@ def cmd_dump(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_seeds(args: argparse.Namespace) -> int:
+    """Registra a lista curada. Aceita handle ou DID — você não precisa caçar DIDs."""
+    conn = db.connect(args.db)
+    try:
+        if not args.file:
+            dids = identity.seed_dids(conn)
+            if not dids:
+                print("nenhuma semente registrada. Use: nabote seeds --file lista.txt")
+                return 0
+            print(f"{len(dids)} sementes registradas\n")
+            for r in conn.execute(
+                "SELECT handle, platform_user_id, tier FROM actor "
+                "WHERE tier IN ('A','B') ORDER BY tier, handle, platform_user_id"):
+                print(f"  {r['tier']}  {(r['handle'] or '—'):<34} {r['platform_user_id']}")
+            return 0
+
+        entries = identity.parse_seed_file(Path(args.file).read_text(encoding="utf-8"))
+        if not entries:
+            print(f"{args.file} não tem nenhuma entrada útil.", file=sys.stderr)
+            return 1
+        print(f"resolvendo {len(entries)} entradas...\n")
+
+        ok, falhas = identity.register_seeds(conn, entries, tier=args.tier)
+        for nome, did in ok:
+            print(f"  ok      {nome:<34} {did}")
+        for nome, motivo in falhas:
+            print(f"  FALHOU  {nome:<34} {motivo}", file=sys.stderr)
+
+        print(f"\n{len(ok)} registradas como tier {args.tier}"
+              + (f", {len(falhas)} falharam" if falhas else ""))
+        if falhas and not ok:
+            return 1
+        print(f"total de sementes no banco: {len(identity.seed_dids(conn))}")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_cycle(args: argparse.Namespace) -> int:
+    """fetch → aggregate → analyze → dump. Um comando por ciclo de coleta."""
+    steps = [
+        ("fetch", cmd_fetch, {"fixture": None, "seeds": None, "host": args.host,
+                              "kind": args.kind, "campaign": args.campaign,
+                              "max_events": args.max_events, "max_seconds": args.max_seconds,
+                              "author_tier": "A", "no_resume": False}),
+        ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all"}),
+        ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
+                                  "view": args.view}),
+        ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
+                            "view": args.view, "top": args.top}),
+    ]
+    for name, func, extra in steps:
+        print(f"\n{'═' * 4} {name} {'═' * (62 - len(name))}")
+        sub_args = argparse.Namespace(db=args.db, command=name, **extra)
+        code = func(sub_args)
+        if code:
+            print(f"\n`{name}` falhou (código {code}); ciclo interrompido.", file=sys.stderr)
+            return code
+    return 0
+
+
 class JetstreamDefaults:
     """Constantes lidas sem importar o cliente WebSocket."""
     host = "jetstream2.us-east.bsky.network"
@@ -275,6 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="tier dado a autores novos (use A numa coleta com --seeds)")
     fetch.add_argument("--no-resume", action="store_true",
                        help="ignora o cursor salvo e começa do zero")
+    fetch.add_argument("--global", dest="global_firehose", action="store_true",
+                       help="consome o firehose inteiro, sem filtro de sementes")
 
     def _janela(p, com_view=False):
         p.add_argument("--window", help="janela YYYY-MM-DD (segunda-feira)")
@@ -290,6 +363,20 @@ def build_parser() -> argparse.ArgumentParser:
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
+
+    seeds = sub.add_parser("seeds", help="registra ou lista a lista curada de perfis")
+    seeds.add_argument("--file", help="arquivo com um handle ou DID por linha")
+    seeds.add_argument("--tier", default="A", choices=["A", "B"])
+
+    cycle = sub.add_parser("cycle", help="fetch + aggregate + analyze + dump")
+    cycle.add_argument("--host", default=JetstreamDefaults.host)
+    cycle.add_argument("--kind", default="baseline", choices=["baseline", "campanha"])
+    cycle.add_argument("--campaign")
+    cycle.add_argument("--max-events", type=int, default=None)
+    cycle.add_argument("--max-seconds", type=float, default=180.0,
+                       help="padrão 180s — um ciclo de coleta tem fim")
+    cycle.add_argument("--view", default=graph.DEFAULT_VIEW, choices=sorted(graph.VIEWS))
+    cycle.add_argument("--top", type=int, default=15)
     return parser
 
 
@@ -299,7 +386,8 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("--kind=campanha exige --campaign RÓTULO")
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze,
-            "dump": cmd_dump}[args.command](args)
+            "dump": cmd_dump, "seeds": cmd_seeds,
+            "cycle": cmd_cycle}[args.command](args)
 
 
 if __name__ == "__main__":
