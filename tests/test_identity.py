@@ -154,3 +154,41 @@ class TestSearchParsing(unittest.TestCase):
         # conta sem os campos opcionais não pode quebrar a listagem
         self.assertEqual(found[1]["display_name"], "")
         self.assertIsNone(found[1]["followers"])
+
+
+class TestUnofficialFlag(unittest.TestCase):
+    """Marcar conta que se declara não-oficial é a defesa mais barata contra o
+    erro mais caro: atribuir discurso de paródia a uma figura pública real."""
+
+    def test_flags_self_declared_fan_and_parody_accounts(self):
+        casos = [
+            ("Jair M. Bolsonaro", "CONTA DE MEME⚠️ Não tem ligação com nenhum politico"),
+            ("Jair Messias Bolsonaro", "38° Presidente. 🚨PÁGINA DE FANS🚨"),
+            ("Nikolas F. de Oliveira", "41• Presidente 🇧🇷 CONTA DE FÃ 🇧🇷"),
+            ("Arthur Lira", "NÃO sou o político he/him"),
+            ("Silas Não o Malafaia", "onde queres agito sou sossego"),
+            ("Fernando Haddad", "Perfil não oficial. Divulgando atividades do ministro"),
+            ("Apoiadores Do Guilherme Boulos", "Perfil de apoio a Guilherme Boulos"),
+            ("Romeu Zema", "fã clube do pior governador do brasil"),
+        ]
+        for nome, bio in casos:
+            with self.subTest(nome=nome):
+                self.assertIsNotNone(identity.flag_declared_unofficial(nome, bio),
+                                     f"não marcou: {nome}")
+
+    def test_does_not_flag_plausible_official_accounts(self):
+        casos = [
+            ("Fernando Haddad",
+             "Ministro da Fazenda de Lula, Ex-Ministro da Educação, Ex-Prefeito de São Paulo"),
+            ("ERIKA HILTON", "Deputada do PSOL ☀️ por São Paulo."),
+            ("Marina Silva", "Ministra do Meio Ambiente e Mudança do Clima"),
+            ("Reinaldo Azevedo", "Jornalista. Siga no Reconversa (YouTube), na BandNews FM"),
+        ]
+        for nome, bio in casos:
+            with self.subTest(nome=nome):
+                self.assertIsNone(identity.flag_declared_unofficial(nome, bio),
+                                  f"marcou indevidamente: {nome}")
+
+    def test_flag_is_a_signal_not_a_verdict(self):
+        """Bio vazia não diz nada — e é justamente o caso mais ambíguo."""
+        self.assertIsNone(identity.flag_declared_unofficial("", ""))

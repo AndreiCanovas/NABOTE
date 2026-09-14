@@ -332,7 +332,7 @@ def cmd_discover(args: argparse.Namespace) -> int:
     for nome in nomes:
         print(f"\n{nome}")
         try:
-            candidatos = identity.search_actors(nome, limit=args.limit)
+            candidatos = identity.search_actors_enriched(nome, limit=args.limit)
         except identity.ResolveError as exc:
             print(f"  erro: {exc}", file=sys.stderr)
             return 1
@@ -343,13 +343,26 @@ def cmd_discover(args: argparse.Namespace) -> int:
         achou += 1
         for c in candidatos:
             seg = f"{c['followers']:,}".replace(",", ".") if c["followers"] is not None else "?"
-            print(f"  {c['handle']:<32} {seg:>9} seg.  {c['display_name'][:28]}")
+            posts = f"{c['posts']:,}".replace(",", ".") if c["posts"] is not None else "?"
+            marcas = []
+            if c["nao_oficial"]:
+                marcas.append(f"⚠ diz-se não-oficial ('{c['nao_oficial']}')")
+            if c["dominio_proprio"]:
+                marcas.append("◆ domínio próprio")
+            if c["posts"] == 0:
+                marcas.append("○ nunca postou")
+            print(f"  {c['handle']:<34} {seg:>9} seg  {posts:>7} posts  "
+                  f"{c['created_at']}  {c['display_name'][:24]}")
+            if marcas:
+                print(f"  {'':<34} {' '.join(marcas)}")
             if c["description"]:
-                print(f"  {'':<32} {'':>9}       {c['description']}")
+                print(f"  {'':<34} {c['description'][:88]}")
 
     print(f"\n{achou} nomes com candidatos, {faltou} sem nenhum.")
-    print("Confira cada handle ANTES de colocar na lista de sementes — homônimo e\n"
-          "paródia são comuns, e coletar a conta errada atribui discurso a quem não disse.")
+    print("Ordenado por seguidores. ⚠ marca conta que se declara não-oficial na bio;\n"
+          "◆ domínio próprio costuma indicar conta institucional; ○ nunca postou.\n"
+          "Nada disso decide — confira cada handle antes de pôr na lista de sementes.\n"
+          "Coletar a conta errada atribui discurso a quem não disse.")
     return 0
 
 

@@ -25,6 +25,11 @@ RESOLVE_URL = (
 SEARCH_URL = (
     "https://public.api.bsky.app/xrpc/app.bsky.actor.searchActors?q={q}&limit={limit}"
 )
+# searchActors não devolve contagem de seguidores — e essa é justamente a
+# informação que separa conta oficial de fã-clube. getProfiles devolve, em
+# lotes de até 25.
+PROFILES_URL = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles"
+PROFILES_BATCH = 25
 TIMEOUT = 15
 
 
@@ -157,3 +162,64 @@ def search_actors(name: str, limit: int = 5) -> list[dict]:
 def parse_name_file(text: str) -> list[str]:
     """Um nome por linha, `#` comenta. Igual ao arquivo de sementes, mas para busca."""
     return parse_seed_file(text)
+
+
+# Frases com que uma conta se declara NÃO oficial. Casar texto é mecânico e não
+# substitui conferência humana — mas pega o caso mais comum, que é a conta
+# avisando na própria bio que não é quem o nome sugere.
+_NAO_OFICIAL = (
+    "não oficial", "nao oficial", "conta de fã", "conta de fa", "página de fans",
+    "pagina de fans", "fan account", "fã clube", "fa clube", "conta de meme",
+    "não sou o", "nao sou o", "paródia", "parodia", "perfil de apoio",
+    "perfil não oficial", "shitpost", "apoiador", "fake",
+)
+
+
+def flag_declared_unofficial(display_name: str, description: str) -> str | None:
+    """Devolve o trecho que declara não-oficialidade, se houver."""
+    blob = f"{display_name} {description}".lower()
+    for marca in _NAO_OFICIAL:
+        if marca in blob:
+            return marca
+    return None
+
+
+def get_profiles(dids: list[str]) -> dict[str, dict]:
+    """Perfis completos por DID: seguidores, posts, data de criação.
+
+    Em lotes de 25, que é o limite do endpoint. Falha de lote não derruba os
+    demais — uma lista de 31 nomes não pode ser perdida por um erro isolado.
+    """
+    out: dict[str, dict] = {}
+    for i in range(0, len(dids), PROFILES_BATCH):
+        lote = dids[i:i + PROFILES_BATCH]
+        query = "&".join(f"actors={urllib.parse.quote(d)}" for d in lote)
+        try:
+            with urllib.request.urlopen(f"{PROFILES_URL}?{query}", timeout=TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            continue
+        for profile in payload.get("profiles", []):
+            out[profile.get("did", "")] = {
+                "followers": profile.get("followersCount"),
+                "posts": profile.get("postsCount"),
+                "created_at": (profile.get("createdAt") or "")[:10],
+            }
+    return out
+
+
+def search_actors_enriched(name: str, limit: int = 5) -> list[dict]:
+    """Busca + enriquecimento, ordenado por seguidores.
+
+    A conta real quase sempre tem ordem de grandeza a mais de seguidores que o
+    fã-clube homônimo. Ordenar por isso põe o candidato provável no topo, mas
+    não decide nada: quem confere é a pessoa.
+    """
+    candidatos = search_actors(name, limit=limit)
+    perfis = get_profiles([c["did"] for c in candidatos if c["did"]])
+    for c in candidatos:
+        c.update(perfis.get(c["did"], {"followers": None, "posts": None, "created_at": ""}))
+        c["nao_oficial"] = flag_declared_unofficial(c["display_name"], c["description"])
+        c["dominio_proprio"] = not c["handle"].endswith(".bsky.social")
+    candidatos.sort(key=lambda c: (c["followers"] is None, -(c["followers"] or 0)))
+    return candidatos
