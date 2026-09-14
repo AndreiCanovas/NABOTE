@@ -17,7 +17,9 @@ import json
 from typing import Any, Iterator
 from urllib.parse import urlencode
 
+from .. import atproto
 from ..atproto import WANTED_COLLECTIONS
+from ..events import NormalizedEvent
 
 # Instâncias públicas operadas pelo Bluesky. Trocar de host é a mitigação
 # imediata se uma delas ficar indisponível.
@@ -66,6 +68,7 @@ class JetstreamSource:
         self.wanted_collections = wanted_collections
         self.open_timeout = open_timeout
         self.recv_timeout = recv_timeout
+        self.skipped = 0
 
     def url(self, cursor: str | None = None) -> str:
         params: list[tuple[str, str]] = [
@@ -76,18 +79,28 @@ class JetstreamSource:
             params.append(("cursor", str(cursor)))
         return f"wss://{self.host}/subscribe?{urlencode(params)}"
 
-    def events(self, cursor: str | None = None) -> Iterator[dict[str, Any]]:
+    def events(self, cursor: str | None = None) -> Iterator[NormalizedEvent]:
         # importado aqui para que o resto do pacote (e os testes) não dependa
         # de websockets estar instalado
         from websockets.sync.client import connect
 
+        self.skipped = 0
         with connect(self.url(cursor), open_timeout=self.open_timeout) as ws:
             while True:
                 raw = ws.recv(timeout=self.recv_timeout)
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8")
                 try:
-                    yield json.loads(raw)
+                    cru = json.loads(raw)
                 except json.JSONDecodeError:
                     # mensagem torta não derruba a conexão inteira
+                    self.skipped += 1
                     continue
+                ev = atproto.normalize(cru)
+                if ev is None:
+                    # o firehose traz curtidas, follows e formatos que não nos
+                    # interessam. Contar é operacionalmente útil: saber que 90%
+                    # do volume foi descartado explica uma coleta "vazia".
+                    self.skipped += 1
+                    continue
+                yield ev

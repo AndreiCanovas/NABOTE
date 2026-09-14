@@ -59,7 +59,7 @@ class TestNormalize(unittest.TestCase):
         ev = atproto.normalize(event)
         # rótulo único é 'reply' (tem precedência), mas as duas arestas saem
         self.assertEqual(ev.post_type, "reply")
-        self.assertEqual({(t.kind, t.did) for t in ev.targets},
+        self.assertEqual({(t.kind, t.uid) for t in ev.targets},
                          {("reply", B), ("quote", C)})
 
     def test_quote_inside_record_with_media(self):
@@ -70,14 +70,14 @@ class TestNormalize(unittest.TestCase):
                 "record": {"record": {"uri": f"at://{C}/app.bsky.feed.post/9"}}}}}}
         ev = atproto.normalize(event)
         self.assertEqual(ev.post_type, "quote")
-        self.assertEqual(ev.targets[0].did, C)
+        self.assertEqual(ev.targets[0].uid, C)
 
     def test_delete_carries_no_record(self):
         event = {"did": A, "time_us": 1, "kind": "commit", "commit": {
             "operation": "delete", "collection": "app.bsky.feed.post", "rkey": "p9"}}
         ev = atproto.normalize(event)
-        self.assertEqual(ev.operation, "delete")
-        self.assertEqual(ev.rid, f"{A}/app.bsky.feed.post/p9")
+        self.assertEqual(ev.kind, "delete")
+        self.assertEqual(ev.post_uid, f"{A}/app.bsky.feed.post/p9")
         self.assertIsNone(ev.text)
 
 
@@ -144,25 +144,25 @@ class TestIngestGraph(IngestTestCase):
         stats = ingest.Stats()
 
         # primeiro C aparece só como alvo de um repost de B
-        ingest.handle_event(conn, run, {
+        ingest.handle_event(conn, run, atproto.normalize({
             "did": B, "time_us": 1, "kind": "commit", "commit": {
                 "operation": "create", "collection": "app.bsky.feed.repost", "rkey": "r1",
-                "record": {"subject": {"uri": f"at://{C}/app.bsky.feed.post/x"}}}},
+                "record": {"subject": {"uri": f"at://{C}/app.bsky.feed.post/x"}}}}),
             stats, author_tier="A")
         self.assertEqual(conn.execute(
             "SELECT tier FROM actor WHERE platform_user_id=?", (C,)).fetchone()["tier"], "C")
 
         # depois um post do próprio C é coletado: ele estava na lista o tempo todo
-        ingest.handle_event(conn, run, {
+        ingest.handle_event(conn, run, atproto.normalize({
             "did": C, "time_us": 2, "kind": "commit", "commit": {
                 "operation": "create", "collection": "app.bsky.feed.post", "rkey": "q1",
-                "record": {"text": "oi", "createdAt": "2026-09-15T10:00:00Z"}}},
+                "record": {"text": "oi", "createdAt": "2026-09-15T10:00:00Z"}}}),
             stats, author_tier="A")
         self.assertEqual(conn.execute(
             "SELECT tier FROM actor WHERE platform_user_id=?", (C,)).fetchone()["tier"], "A")
 
         # e nunca desce de volta ao virar alvo outra vez
-        ingest.upsert_actor(conn, C, "C", stats)
+        ingest.upsert_actor(conn, atproto.PLATFORM, C, "C", stats=stats)
         self.assertEqual(conn.execute(
             "SELECT tier FROM actor WHERE platform_user_id=?", (C,)).fetchone()["tier"], "A")
         conn.close()
@@ -180,9 +180,9 @@ class TestIngestGraph(IngestTestCase):
 
 class TestIngestRobustness(IngestTestCase):
     def test_irrelevant_and_malformed_events_are_counted_not_fatal(self):
-        # like + evento sem did
+        # a fonte descarta antes: o like e o evento sem did não chegam ao ingest
+        self.assertEqual(self.stats.events_seen, 9)
         self.assertEqual(self.stats.events_ignored, 2)
-        self.assertEqual(self.stats.events_seen, 11)
 
     def test_duplicate_record_is_not_reinserted(self):
         self.assertEqual(self.stats.posts_dup, 1)
@@ -238,10 +238,10 @@ class TestDeletion(IngestTestCase):
 
     def test_delete_of_unknown_post_is_counted_not_fatal(self):
         stats = ingest.Stats()
-        ingest.handle_event(self.conn, self.run_id, {
+        ingest.handle_event(self.conn, self.run_id, atproto.normalize({
             "did": A, "time_us": 9, "kind": "commit", "commit": {
                 "operation": "delete", "collection": "app.bsky.feed.post",
-                "rkey": "nunca-visto"}}, stats)
+                "rkey": "nunca-visto"}}), stats)
         self.assertEqual(stats.deletes_unknown, 1)
 
 

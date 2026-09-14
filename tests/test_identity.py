@@ -94,16 +94,18 @@ class TestRegisterSeeds(unittest.TestCase):
 
     def test_registering_promotes_a_previously_observed_actor(self):
         """Alguém visto antes só como alvo (C) vira semente ao ser curado."""
+        from nabote.atproto import PLATFORM
         from nabote.ingest import upsert_actor
-        upsert_actor(self.conn, "did:plc:antigo", "C")
+        upsert_actor(self.conn, PLATFORM, "did:plc:antigo", "C")
         identity.register_seeds(self.conn, ["did:plc:antigo"], tier="A")
         row = self.conn.execute(
             "SELECT tier FROM actor WHERE platform_user_id = 'did:plc:antigo'").fetchone()
         self.assertEqual(row["tier"], "A")
 
     def test_tier_c_actors_are_not_seeds(self):
+        from nabote.atproto import PLATFORM
         from nabote.ingest import upsert_actor
-        upsert_actor(self.conn, "did:plc:soalvo", "C")
+        upsert_actor(self.conn, PLATFORM, "did:plc:soalvo", "C")
         identity.register_seeds(self.conn, ["did:plc:semente"], tier="A")
         self.assertEqual(identity.seed_dids(self.conn), ["did:plc:semente"])
 

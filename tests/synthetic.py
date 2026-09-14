@@ -113,10 +113,17 @@ class ListSource:
     def __init__(self, events: list[dict[str, Any]], name: str = "sintetico") -> None:
         self._events = events
         self.name = name
+        self.skipped = 0
 
     def events(self, cursor: str | None = None):
+        from nabote import atproto
+
         after = int(cursor) if cursor else None
-        for event in self._events:
-            if after is not None and event.get("time_us", 0) <= after:
+        for evento in self._events:
+            if after is not None and evento.get("time_us", 0) <= after:
                 continue
-            yield event
+            ev = atproto.normalize(evento)
+            if ev is None:
+                self.skipped += 1
+                continue
+            yield ev

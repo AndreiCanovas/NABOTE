@@ -106,7 +106,7 @@ def register_seeds(
                 falhas.append((raw, str(exc)))
                 continue
 
-        actor_id = upsert_actor(conn, did, tier)
+        actor_id = upsert_actor(conn, PLATFORM, did, tier)
         if handle:
             conn.execute(
                 "UPDATE actor SET handle = ?, last_seen_at = ? WHERE actor_id = ?",

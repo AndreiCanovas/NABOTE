@@ -8,6 +8,7 @@ Neste passo só `init` e `status` existem; os demais entram na ordem da frente 0
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -428,6 +429,73 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_load_x(args: argparse.Namespace) -> int:
+    """Carrega a base histórica do X (parquet em zip).
+
+    Cada arquivo vira um `collection_run` com kind='campanha' e o termo de busca
+    como rótulo. Isso não é detalhe burocrático: a base foi coletada por termo em
+    Trending Topics, em dias esparsos. Sem o rótulo, um pico de volume ficaria
+    indistinguível de uma mudança na própria intensidade de coleta — e a análise
+    temporal mentiria sem avisar.
+    """
+    from .sources.x_parquet import XParquetSource, members_of, parse_member_name
+
+    alvo = Path(args.path)
+    if not alvo.exists():
+        print(f"não encontrei {alvo}", file=sys.stderr)
+        return 1
+
+    conn = db.connect(args.db)
+    try:
+        if db.current_version(conn) == 0:
+            print("banco não migrado. Rode: nabote init", file=sys.stderr)
+            return 1
+
+        membros = members_of(alvo)
+        if args.member:
+            membros = [m for m in membros if args.member in m]
+            if not membros:
+                print(f"nenhum arquivo casa com {args.member!r}", file=sys.stderr)
+                return 1
+
+        # retomada: pula o que já foi carregado com sucesso
+        feitos = {r["query"] for r in conn.execute(
+            "SELECT query FROM collection_run WHERE source LIKE 'x_parquet:%' "
+            "AND status = 'ok' AND query IS NOT NULL")}
+        pendentes = [m for m in membros if m not in feitos]
+        if feitos:
+            print(f"{len(feitos)} arquivo(s) já carregado(s), pulando\n")
+        if args.files:
+            pendentes = pendentes[: args.files]
+        if not pendentes:
+            print("nada a carregar — tudo já está no banco.")
+            return 0
+
+        print(f"carregando {len(pendentes)} de {len(membros)} arquivos\n")
+        total = ingest.Stats()
+        for i, membro in enumerate(pendentes, 1):
+            data, termo = parse_member_name(membro)
+            fonte = XParquetSource(alvo, membro)
+            run_id, st = ingest.ingest(
+                conn, fonte, kind="campanha", campaign_label=termo or membro,
+                author_tier=args.author_tier, resume=False)
+            conn.execute("UPDATE collection_run SET query = ? WHERE run_id = ?",
+                         (membro, run_id))
+            for campo, valor in st.as_dict().items():
+                setattr(total, campo, getattr(total, campo) + valor)
+            print(f"  [{i:>3}/{len(pendentes)}] {data}  {(termo or '?')[:34]:<35} "
+                  f"{st.posts_new:>7,} posts  {st.interactions_new:>7,} arestas"
+                  .replace(",", "."))
+
+        print("\ntotal")
+        for campo, valor in total.as_dict().items():
+            if valor:
+                print(f"  {campo:<22} {valor:>10,}".replace(",", "."))
+        return 0
+    finally:
+        conn.close()
+
+
 class JetstreamDefaults:
     """Constantes lidas sem importar o cliente WebSocket."""
     host = "jetstream2.us-east.bsky.network"
@@ -478,6 +546,15 @@ def build_parser() -> argparse.ArgumentParser:
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
 
+    lx = sub.add_parser("load-x", help="carrega base histórica do X (parquet em zip)")
+    lx.add_argument("path", help="caminho do .zip")
+    lx.add_argument("--files", type=int, default=None,
+                    help="carrega só os N primeiros arquivos (comece pequeno)")
+    lx.add_argument("--member", help="só arquivos cujo nome contenha este texto")
+    lx.add_argument("--author-tier", default="C", choices=["A", "B", "C"],
+                    help="tier dos autores; C é o certo aqui, porque a coleta foi "
+                         "por termo e não por conta curada")
+
     insp = sub.add_parser("inspect", help="esquema e amostra de uma base externa")
     insp.add_argument("path", help="caminho de um .zip ou .parquet")
     insp.add_argument("--member", help="arquivo dentro do zip (padrão: o menor)")
@@ -512,9 +589,16 @@ def main(argv: list[str] | None = None) -> int:
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
-            "inspect": cmd_inspect,
+            "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Encerramento direto. O pyarrow às vezes aborta na finalização do
+    # interpretador ("terminate called without an active exception"), depois de
+    # a saída já ter sido impressa — assustador e sem consequência. Nada aqui
+    # depende de atexit: as conexões são fechadas em `finally`.
+    _codigo = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_codigo)

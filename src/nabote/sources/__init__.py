@@ -9,5 +9,6 @@ nada fora deste pacote souber de onde o dado veio.
 from .base import Source
 from .fixture import FixtureSource
 from .jetstream import JetstreamSource
+from .x_parquet import XParquetSource
 
-__all__ = ["Source", "FixtureSource", "JetstreamSource"]
+__all__ = ["Source", "FixtureSource", "JetstreamSource", "XParquetSource"]
