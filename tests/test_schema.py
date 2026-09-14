@@ -64,18 +64,24 @@ class SchemaTestCase(unittest.TestCase):
 
 
 class TestMigration(SchemaTestCase):
-    def test_migration_is_recorded(self):
-        self.assertEqual(db.current_version(self.conn), 1)
-        row = self.conn.execute(
-            "SELECT name, applied_at FROM schema_migrations WHERE version = 1"
-        ).fetchone()
-        self.assertEqual(row["name"], "initial")
-        self.assertTrue(row["applied_at"].endswith("Z"))
+    def test_every_migration_on_disk_is_recorded(self):
+        # sem fixar número: o teste não pode quebrar a cada migração nova
+        on_disk = db.discover_migrations(ROOT / "migrations")
+        self.assertEqual(db.current_version(self.conn), max(v for v, _, _ in on_disk))
+
+        recorded = {
+            r["version"]: r["name"]
+            for r in self.conn.execute("SELECT version, name FROM schema_migrations")
+        }
+        self.assertEqual(recorded, {v: n for v, n, _ in on_disk})
+        for row in self.conn.execute("SELECT applied_at FROM schema_migrations"):
+            self.assertTrue(row["applied_at"].endswith("Z"))
 
     def test_migrate_is_idempotent(self):
+        before = db.current_version(self.conn)
         applied = db.migrate(self.conn, ROOT / "migrations")
         self.assertEqual(applied, [])
-        self.assertEqual(db.current_version(self.conn), 1)
+        self.assertEqual(db.current_version(self.conn), before)
 
     def test_expected_objects_exist(self):
         names = {
@@ -90,6 +96,7 @@ class TestMigration(SchemaTestCase):
             "actor_topic_window", "topic_community_window", "actor_position",
             "actor_metric", "community", "actor_community", "export_log",
             "v_actor_current", "v_top_atores", "v_arestas_janela", "v_custo_por_run",
+            "source_state", "v_post_ativo",
         ]:
             self.assertIn(expected, names, f"faltando: {expected}")
 

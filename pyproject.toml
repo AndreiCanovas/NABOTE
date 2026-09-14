@@ -3,9 +3,11 @@ name = "nabote"
 version = "0.1.0"
 description = "Instrumento analítico interno de mapeamento do discurso público brasileiro"
 requires-python = ">=3.11"
-# Sem dependências no passo 0: o schema e a CLI usam só a biblioteca padrão.
-# igraph, sentence-transformers e o cliente HTTP entram nos passos 2, 3 e 1.
-dependencies = []
+# Uma dependência, adicionada no passo 1: cliente WebSocket para o Jetstream.
+# O parser, o schema e a CLI continuam em biblioteca padrão — `websockets` só é
+# importado dentro de JetstreamSource, então os testes rodam sem ele instalado.
+# igraph entra no passo 2, sentence-transformers no passo 3.
+dependencies = ["websockets>=13"]
 
 [project.scripts]
 nabote = "nabote.cli:main"

@@ -1,0 +1,9 @@
+# Lista de sementes: um DID por linha, `#` comenta.
+# ATENÇÃO: os DIDs abaixo são INVENTADOS, para demonstrar o formato.
+# Substitua pelos DIDs reais dos perfis que você curou (frente 02 do plano).
+#
+# Para descobrir o DID de um handle:
+#   curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=NOME.bsky.social"
+
+did:plc:exemplo0001seed   # exemplo-a.test
+did:plc:exemplo0002seed   # exemplo-b.test

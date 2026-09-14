@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, db
+from . import __version__, db, ingest
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -71,6 +71,70 @@ def cmd_status(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def load_seeds(path: Path) -> list[str]:
+    """Um DID por linha; `#` comenta. É a lista curada à mão da frente 02."""
+    dids = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            dids.append(line)
+    return dids
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    try:
+        if db.current_version(conn) == 0:
+            print("banco não migrado. Rode: nabote init", file=sys.stderr)
+            return 1
+
+        if args.fixture:
+            from .sources import FixtureSource
+            source = FixtureSource(Path(args.fixture))
+            print(f"fonte    fixture {args.fixture}")
+        else:
+            from .sources import JetstreamSource
+            seeds = load_seeds(Path(args.seeds)) if args.seeds else []
+            source = JetstreamSource(host=args.host, wanted_dids=seeds)
+            print(f"fonte    jetstream {args.host}")
+            print(f"filtro   {len(seeds) or 'nenhum — firehose global'} "
+                  f"{'DIDs' if seeds else ''}".rstrip())
+
+        cursor = ingest.get_cursor(conn, source.name) if not args.no_resume else None
+        print(f"cursor   {cursor or 'nenhum — começando do evento mais recente'}")
+        if args.max_events or args.max_seconds:
+            teto = ", ".join(filter(None, [
+                f"{args.max_events} eventos" if args.max_events else None,
+                f"{args.max_seconds}s" if args.max_seconds else None]))
+            print(f"teto     {teto}")
+        print()
+
+        try:
+            run_id, stats = ingest.ingest(
+                conn, source, kind=args.kind, campaign_label=args.campaign,
+                max_events=args.max_events, max_seconds=args.max_seconds,
+                author_tier=args.author_tier, resume=not args.no_resume,
+            )
+        except KeyboardInterrupt:
+            print("\ninterrompido — o cursor foi salvo, `fetch` retoma daqui", file=sys.stderr)
+            return 130
+
+        print(f"run #{run_id}")
+        for key, value in stats.as_dict().items():
+            if value:
+                print(f"  {key:22s} {value:>8,}".replace(",", "."))
+        if not stats.events_seen:
+            print("  nenhum evento — nada novo desde o cursor")
+        return 0
+    finally:
+        conn.close()
+
+
+class JetstreamDefaults:
+    """Constantes lidas sem importar o cliente WebSocket."""
+    host = "jetstream2.us-east.bsky.network"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nabote", description="Instrumento analítico de mapeamento do discurso público."
@@ -83,12 +147,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="cria o banco e aplica as migrações pendentes")
     sub.add_parser("status", help="mostra versão do schema, volume e custo acumulado")
+
+    fetch = sub.add_parser("fetch", help="coleta eventos e grava post/interaction")
+    fetch.add_argument("--fixture", help="lê de um arquivo JSONL em vez da rede (testes)")
+    fetch.add_argument("--seeds", help="arquivo com um DID por linha; filtra o firehose")
+    fetch.add_argument("--host", default=JetstreamDefaults.host,
+                       help=f"instância do Jetstream (padrão: {JetstreamDefaults.host})")
+    fetch.add_argument("--kind", default="baseline", choices=["baseline", "campanha"])
+    fetch.add_argument("--campaign", help="rótulo da campanha; obrigatório se --kind=campanha")
+    fetch.add_argument("--max-events", type=int, default=None,
+                       help="teto de eventos — orçamento é código, não disciplina")
+    fetch.add_argument("--max-seconds", type=float, default=None, help="teto de tempo")
+    fetch.add_argument("--author-tier", default="C", choices=["A", "B", "C"],
+                       help="tier dado a autores novos (use A numa coleta com --seeds)")
+    fetch.add_argument("--no-resume", action="store_true",
+                       help="ignora o cursor salvo e começa do zero")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return {"init": cmd_init, "status": cmd_status}[args.command](args)
+    if args.command == "fetch" and args.kind == "campanha" and not args.campaign:
+        build_parser().error("--kind=campanha exige --campaign RÓTULO")
+    return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch}[args.command](args)
 
 
 if __name__ == "__main__":
