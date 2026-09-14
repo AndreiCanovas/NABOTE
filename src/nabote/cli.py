@@ -397,6 +397,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         tabela = probe.read_parquet_file(alvo)
 
     print(probe.describe(tabela, sample_rows=args.rows))
+    print(probe.diagnose(tabela))
     return 0
 
 

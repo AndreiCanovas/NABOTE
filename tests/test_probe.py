@@ -78,3 +78,60 @@ class ProbeTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiagnose(unittest.TestCase):
+    """O diagnóstico decide se dá para montar grafo. Falso positivo aqui manda
+    escrever adaptador contra coluna que não existe — daí o casamento exato."""
+
+    @staticmethod
+    def _tabela(**colunas):
+        import pyarrow as pa
+        return pa.table({k: [v] for k, v in colunas.items()})
+
+    def test_exact_match_avoids_substring_false_positives(self):
+        # "id" não pode casar com referenced_tweets_author_id
+        saida = probe.diagnose(self._tabela(
+            id=1, author_id=1, text="t", created_at="2023",
+            referenced_tweets="[]", referenced_tweets_author_id=9))
+        linha_id = [l for l in saida.splitlines() if "id do post" in l][0]
+        self.assertIn("id", linha_id)
+        self.assertNotIn("referenced_tweets_author_id", linha_id)
+
+    def test_direct_graph_when_referenced_author_present(self):
+        saida = probe.diagnose(self._tabela(
+            id=1, author_id=1, text="t", created_at="2023",
+            referenced_tweets_author_id=9))
+        self.assertIn("GRAFO DIRETO", saida)
+
+    def test_mentions_fallback_when_no_referenced_author(self):
+        saida = probe.diagnose(self._tabela(
+            id=1, author_id=1, text="t", created_at="2023", entities="{}"))
+        self.assertIn("GRAFO POR MENÇÃO", saida)
+
+    def test_partial_when_only_referenced_tweet_id(self):
+        saida = probe.diagnose(self._tabela(
+            id=1, author_id=1, text="t", created_at="2023", referenced_tweets="[]"))
+        self.assertIn("GRAFO PARCIAL", saida)
+        self.assertIn("RT @usuario:", saida)
+
+    def test_no_edges_at_all_is_stated_plainly(self):
+        saida = probe.diagnose(self._tabela(
+            id=1, author_id=1, text="t", created_at="2023"))
+        self.assertIn("SEM ARESTAS", saida)
+
+    def test_missing_essentials_blocks_before_anything_else(self):
+        saida = probe.diagnose(self._tabela(text="t", created_at="2023"))
+        self.assertIn("BLOQUEIA", saida)
+        self.assertNotIn("GRAFO", saida)
+
+    def test_warns_when_author_has_no_handle(self):
+        """Sem handle, o relatório fica ilegível e não cruza com a lista curada."""
+        sem = probe.diagnose(self._tabela(
+            id=1, author_id=1, text="t", created_at="2023",
+            referenced_tweets_author_id=9))
+        com = probe.diagnose(self._tabela(
+            id=1, author_id=1, username="x", text="t", created_at="2023",
+            referenced_tweets_author_id=9))
+        self.assertIn("ATENÇÃO", sem)
+        self.assertNotIn("ATENÇÃO", com)
