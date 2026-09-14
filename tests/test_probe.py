@@ -135,3 +135,61 @@ class TestDiagnose(unittest.TestCase):
             referenced_tweets_author_id=9))
         self.assertIn("ATENÇÃO", sem)
         self.assertNotIn("ATENÇÃO", com)
+
+
+class TestEmptyFileHandling(unittest.TestCase):
+    """Um parquet de 0 linhas não tem tipo para inferir: tudo vira `null` e o
+    diagnóstico mentiria dizendo que faltam colunas que existem. Aconteceu na
+    primeira execução contra a base real, porque o padrão pegava o MENOR
+    arquivo — e o menor era justamente um vazio."""
+
+    @staticmethod
+    def _vazio():
+        import pyarrow as pa
+        cols = ["created_at", "tweet_id", "tweet_content", "user", "retweeted_from"]
+        return pa.table({c: pa.array([], pa.null()) for c in cols})
+
+    def test_empty_table_is_reported_as_empty_not_as_missing_columns(self):
+        saida = probe.diagnose(self._vazio())
+        self.assertIn("ARQUIVO VAZIO", saida)
+        self.assertNotIn("BLOQUEIA", saida)
+        self.assertNotIn("GRAFO", saida)
+
+
+class TestDenormalizedDataset(unittest.TestCase):
+    """Formato da base brasileira de 2023: referências já desnormalizadas em
+    coluna própria por tipo. É mais fácil de consumir que o JSON cru da API,
+    onde o autor do post referenciado só vem com a expansion certa."""
+
+    @staticmethod
+    def _tabela():
+        import pyarrow as pa
+        return pa.table({
+            "created_at": ["2023-01-08T14:22:10.000Z"],
+            "tweet_id": ["1611"],
+            "tweet_content": ["RT @alguem: texto"],
+            "user": ["usuario_a"],
+            "user_info": ['{"followers":1200}'],
+            "mentions": ['["alguem"]'],
+            "is_reply": [False], "reply_to": [None],
+            "is_quote": [False], "quoted_from": [None],
+            "is_retweet": [True], "retweeted_from": ["alguem"],
+            "hashtags": ['["GolpeDeEstado"]'],
+        })
+
+    def test_recognised_as_direct_graph(self):
+        saida = probe.diagnose(self._tabela())
+        self.assertIn("GRAFO DIRETO", saida)
+        self.assertNotIn("BLOQUEIA", saida)
+        self.assertNotIn("ATENÇÃO", saida)
+
+    def test_each_interaction_type_maps_to_its_own_target_column(self):
+        saida = probe.diagnose(self._tabela())
+        linha = [l for l in saida.splitlines() if "autor referenciado" in l][0]
+        for coluna in ("retweeted_from", "quoted_from", "reply_to"):
+            self.assertIn(coluna, linha)
+
+    def test_tweet_content_counts_as_text(self):
+        saida = probe.diagnose(self._tabela())
+        linha = [l for l in saida.splitlines() if "texto" in l][0]
+        self.assertIn("tweet_content", linha)

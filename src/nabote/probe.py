@@ -105,20 +105,25 @@ _PAPEIS: dict[str, tuple[str, ...]] = {
                             "user", "from_user_id"),
     "handle do autor":     ("username", "screen_name", "author_username",
                             "user_username", "handle", "user_screen_name",
-                            "author_handle", "from_user"),
+                            "author_handle", "from_user", "user_info"),
     "texto":               ("text", "full_text", "content", "tweet", "tweet_text",
-                            "body"),
+                            "body", "tweet_content"),
     "data":                ("created_at", "createdat", "date", "timestamp",
                             "tweet_created_at", "datetime"),
     "idioma":              ("lang", "language", "tweet_lang"),
     "posts referenciados": ("referenced_tweets", "referenced_tweet", "references",
                             "in_reply_to_status_id", "retweeted_status",
                             "quoted_status", "quoted_status_id",
-                            "in_reply_to_tweet_id", "conversation_id"),
+                            "in_reply_to_tweet_id", "conversation_id",
+                            "is_retweet", "is_quote", "is_reply"),
+    # Base desnormalizada — alvo já explícito por tipo de interação. É a forma
+    # MAIS fácil de consumir, mais até que o JSON cru da API, onde o autor do
+    # post referenciado só vem se pedirem a expansion certa.
     "autor referenciado":  ("referenced_tweets_author_id", "in_reply_to_user_id",
                             "retweeted_user_id", "quoted_user_id",
                             "referenced_author_id", "original_author_id",
-                            "in_reply_to_screen_name", "retweeted_author_id"),
+                            "in_reply_to_screen_name", "retweeted_author_id",
+                            "retweeted_from", "quoted_from", "reply_to"),
     "menções":             ("entities", "mentions", "entities_mentions",
                             "user_mentions", "entities_mentions_username"),
     "métricas":            ("public_metrics", "retweet_count", "like_count",
@@ -141,6 +146,11 @@ def _casa(nome: str, candidatos: tuple[str, ...]) -> bool:
 def diagnose(table) -> str:
     """Diz, em linguagem de projeto, se esta base dá para montar o grafo."""
     colunas = list(table.schema.names)
+
+    if table.num_rows == 0:
+        return ("\ndiagnóstico\n" + "-" * 104 +
+                "\n  ARQUIVO VAZIO: 0 linhas. Os tipos aparecem como `null` porque não há\n"
+                "  dado para inferir — não é defeito do esquema. Inspecione outro arquivo.")
     achados: dict[str, list[str]] = {}
     for papel, candidatos in _PAPEIS.items():
         achados[papel] = [c for c in colunas if _casa(c, candidatos)]

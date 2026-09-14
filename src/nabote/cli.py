@@ -387,11 +387,38 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 print(f"  {tam / 1e6:>8.1f} MB  {nome}")
             return 0
 
-        # sem --member, escolhe o menor: baixa memória e resposta rápida
-        membro = args.member or min(membros, key=lambda pair: pair[1])[0]
-        tamanho = dict(membros)[membro]
-        print(f"inspecionando: {membro}  ({tamanho / 1e6:.1f} MB)\n")
-        tabela = probe.read_parquet_member(alvo, membro)
+        if args.member:
+            tamanho = dict(membros).get(args.member)
+            if tamanho is None:
+                print(f"{args.member} não está no zip. Use --list para ver os nomes.",
+                      file=sys.stderr)
+                return 1
+            print(f"inspecionando: {args.member}  ({tamanho / 1e6:.1f} MB)\n")
+            tabela = probe.read_parquet_member(alvo, args.member)
+        else:
+            # Do menor para o maior, PULANDO os vazios. Arquivo de 0 linhas não
+            # tem tipo para inferir e faria o diagnóstico mentir — foi o que
+            # aconteceu na primeira execução contra a base real.
+            tabela = None
+            vazios: list[str] = []
+            for nome, tamanho in sorted(membros, key=lambda par: par[1]):
+                candidata = probe.read_parquet_member(alvo, nome)
+                if candidata.num_rows == 0:
+                    vazios.append(nome)
+                    if len(vazios) >= 8:
+                        break
+                    continue
+                if vazios:
+                    print(f"pulei {len(vazios)} arquivo(s) vazio(s): "
+                          f"{', '.join(v.split('/')[-1] for v in vazios[:3])}"
+                          f"{'…' if len(vazios) > 3 else ''}\n")
+                print(f"inspecionando: {nome}  ({tamanho / 1e6:.1f} MB)\n")
+                tabela = candidata
+                break
+            if tabela is None:
+                print(f"os {len(vazios)} menores arquivos estão vazios. "
+                      f"Escolha um maior com --member (veja --list).", file=sys.stderr)
+                return 1
     else:
         print(f"inspecionando: {alvo.name}\n")
         tabela = probe.read_parquet_file(alvo)
