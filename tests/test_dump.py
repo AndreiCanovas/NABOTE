@@ -274,6 +274,36 @@ class TestThemes(unittest.TestCase):
         self.assertIn("12 com voz", saida)   # 13 atores no grafo, 12 autores
         self.assertIn("13 atores", saida)
 
+    def test_voz_nunca_passa_do_tamanho_da_comunidade(self):
+        """Contar autores distintos por TERMO e somar conta duas vezes quem
+        falou de dois assuntos — e o total estoura o tamanho da comunidade. Foi
+        assim que este bug apareceu no dado real: 5.014 atores, 6.760 "com voz"."""
+        from nabote.events import NormalizedEvent, Target
+
+        class Fonte:
+            def __init__(self, nome, eventos):
+                self.name, self._eventos, self.skipped = nome, eventos, 0
+
+            def events(self, cursor=None):
+                yield from self._eventos
+
+        # os MESMOS 20 atores postam sob dois termos diferentes
+        for termo in ("posse", "alckmin"):
+            eventos = [NormalizedEvent(
+                platform="x", kind="post", actor_uid=f"a{i}",
+                occurred_at="2022-12-28T10:00:00Z", post_uid=f"p{termo}{i}",
+                post_type="repost", targets=[Target(kind="repost", uid="hub")])
+                for i in range(20)]
+            ingest.ingest(self.conn, Fonte(f"x:{termo}", eventos), kind="campanha",
+                          campaign_label=termo, author_tier="C", resume=False)
+
+        saida = self.themes("2022-12-26")
+        tamanho = int(saida.split(" atores")[0].split()[-1])
+        voz = int(saida.split(" com voz")[0].split()[-1])
+        self.assertEqual(tamanho, 21, "20 autores + o hub")
+        self.assertEqual(voz, 20, "cada autor conta UMA vez, não uma por termo")
+        self.assertLessEqual(voz, tamanho)
+
     def test_min_community_esconde_as_pequenas(self):
         self.carrega("posse", "hub", "a", 30)
         self.assertNotIn("posse", self.themes("2022-12-26", min_community=500))

@@ -246,19 +246,31 @@ def cmd_themes(args: argparse.Namespace) -> int:
                 continue
 
             janela_sql = graph.WINDOW_SQL.format(col="p.created_at")
+            recorte = (f"ac.window_start=? AND ac.scope=? AND {janela_sql} = ?")
+            valores = (window, scope, window)
+
             termos: dict[int, list[tuple[str, int]]] = {}
-            vozes: dict[int, int] = {}
             for r in conn.execute(f"""
                 SELECT ac.community_id AS com, cr.campaign_label AS termo,
-                       COUNT(*) AS posts, COUNT(DISTINCT p.actor_id) AS autores
+                       COUNT(*) AS posts
                 FROM actor_community ac
                 JOIN post p ON p.actor_id = ac.actor_id
                 JOIN collection_run cr ON cr.run_id = p.run_id
-                WHERE ac.window_start=? AND ac.scope=? AND {janela_sql} = ?
+                WHERE {recorte}
                 GROUP BY ac.community_id, cr.campaign_label
-            """, (window, scope, window)):
+            """, valores):
                 termos.setdefault(r["com"], []).append((r["termo"] or "?", r["posts"]))
-                vozes[r["com"]] = vozes.get(r["com"], 0) + r["autores"]
+
+            # Autores distintos PRECISA ser contado por comunidade, nunca somando
+            # o distinto de cada termo: quem falou de dois assuntos seria contado
+            # duas vezes, e o total passa do tamanho da comunidade.
+            vozes = {r["com"]: r["autores"] for r in conn.execute(f"""
+                SELECT ac.community_id AS com, COUNT(DISTINCT p.actor_id) AS autores
+                FROM actor_community ac
+                JOIN post p ON p.actor_id = ac.actor_id
+                WHERE {recorte}
+                GROUP BY ac.community_id
+            """, valores)}
 
             print(f"\njanela {window}   visão {scope}")
             for c in comunidades:
