@@ -278,6 +278,15 @@ O segundo grava em `reply@amp:core` — a visão `reply` medida sobre a partiç�
 | fechada | **aberta** | polarização: promove os seus, discute com os outros |
 | aberta | aberta | não é bloco |
 
+`--partition` também importa de **outra semana**, com `2023-01-16:amp:core`. Isso
+separa fusão real de artefato de resolução: quando comunidades de uma semana
+viram uma só na seguinte, o E-I não decide nada — fundir comunidades transforma
+aresta externa em interna, então ele despenca por construção, tenha ou não
+mudado o comportamento de alguém. Aplicando a partição ANTIGA ao grafo NOVO, o
+E-I volta a informar: se os grupos continuam internos, foi o Leiden agrupando
+mais grosso porque o grafo adensou; se passaram a se amplificar entre si, a
+fusão é real.
+
 Atores do grafo de respostas que não estão na partição ficam de fora, e o
 `analyze` diz quantos: número alto significa que os dois grafos mal se
 sobrepõem e a comparação não se sustenta.
@@ -394,7 +403,7 @@ não leu a conversa, e número sem ressalva vira slide.
 python3 -m unittest discover -s tests
 ```
 
-200 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+208 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

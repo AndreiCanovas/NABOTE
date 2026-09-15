@@ -446,6 +446,24 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _particao(valor: str | None) -> tuple[str | None, str | None]:
+    """'amp:core' -> (None, 'amp:core') · '2023-01-16:amp:core' -> (janela, escopo).
+
+    Distinguir os dois pela forma: escopo nunca começa com uma data.
+    """
+    if not valor:
+        return None, None
+    inicio, _, resto = valor.partition(":")
+    parece_data = len(inicio) == 10 and inicio[4] == "-" and inicio[7] == "-"
+    if parece_data and not resto:
+        # Uma data sozinha não é partição nenhuma: falta dizer QUAL análise
+        # daquela semana. Melhor recusar que adivinhar.
+        raise ValueError(
+            f"--partition {valor!r} não diz o escopo. "
+            f"Use {valor}:amp:core, ou só amp:core para esta mesma janela.")
+    return (inicio, resto) if parece_data else (None, valor)
+
+
 def _escopo(args: argparse.Namespace) -> str:
     """Escopo analítico pedido, na gramática do schema.
 
@@ -455,7 +473,7 @@ def _escopo(args: argparse.Namespace) -> str:
       <visão>@<escopo>           partição importada daquele escopo
     """
     if getattr(args, "partition", None):
-        return f"{args.view}@{args.partition}"
+        return f"{args.view}@{args.partition}"  # já inclui a janela, se houver
     scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
     return scope + ":core" if getattr(args, "core", False) else scope
 
@@ -471,6 +489,12 @@ def _avisa_migracao(conn) -> None:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
+    try:
+        particao = _particao(args.partition)
+    except ValueError as erro:
+        print(erro, file=sys.stderr)
+        return 1
+
     conn = db.connect(args.db)
     try:
         _avisa_migracao(conn)
@@ -479,9 +503,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             print("nenhuma interação no banco. Rode `fetch` antes.", file=sys.stderr)
             return 1
         for window in windows:
+            pj, pe = particao
             r = graph.analyze_window(conn, window, view=args.view,
                                      edge_scope=args.scope, core=args.core,
-                                     partition_scope=args.partition)
+                                     partition_scope=pe, partition_window=pj)
             if not r["nodes"]:
                 print(f"{window}  vazio para a visão {args.view}")
                 continue
@@ -1133,7 +1158,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="amp = repost+citação (padrão) · reply = respostas")
         if com_core:
             p.add_argument("--partition", metavar="ESCOPO", default=None,
-                           help="importa a partição deste escopo (ex.: amp:core) "
+                           help="importa a partição deste escopo (ex.: amp:core, "
+                                "ou 2023-01-16:amp:core para outra semana) "
                                 "em vez de detectar comunidade aqui. Grava em "
                                 "<visão>@<escopo>. É a única forma correta de "
                                 "comparar visões: o Leiden no grafo de respostas "

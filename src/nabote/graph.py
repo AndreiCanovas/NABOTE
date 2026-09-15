@@ -376,15 +376,26 @@ def compute_metrics(graph: Any, membership: list[int]) -> dict[str, list[float]]
 def imported_partition(
     conn: sqlite3.Connection, window_start: str, partition_scope: str,
     actor_ids: list[int], graph_version: int = GRAPH_VERSION,
+    partition_window: str | None = None,
 ) -> dict[int, int]:
-    """Comunidade de cada ator, vinda de OUTRO escopo já analisado.
+    """Comunidade de cada ator, vinda de outro escopo — e de outra JANELA.
+
+    `partition_window` importa a partição de uma semana diferente. Serve para o
+    teste que separa fusão real de artefato de resolução: se seis comunidades de
+    uma semana viram uma na seguinte, aplicar a partição ANTIGA ao grafo NOVO
+    responde se elas passaram a se amplificar entre si (fusão) ou continuam
+    internas (o Leiden só agrupou mais grosso porque o grafo adensou).
+
+    Sem isso, o E-I não decide nada: fundir comunidades transforma aresta
+    externa em interna, então o E-I despenca por construção, tenha ou não
+    mudado o comportamento de alguém.
 
     Devolve {actor_id: community_id}, só para os atores que existem lá.
     """
     lookup = {r["actor_id"]: r["community_id"] for r in conn.execute(
         "SELECT actor_id, community_id FROM actor_community "
         "WHERE window_start=? AND scope=? AND graph_version=?",
-        (window_start, partition_scope, graph_version))}
+        (partition_window or window_start, partition_scope, graph_version))}
     return {a: lookup[a] for a in actor_ids if a in lookup}
 
 
@@ -465,6 +476,7 @@ def analyze_window(
     conn: sqlite3.Connection, window_start: str, view: str = DEFAULT_VIEW,
     edge_scope: str = "all", graph_version: int = GRAPH_VERSION,
     core: bool = False, partition_scope: str | None = None,
+    partition_window: str | None = None,
 ) -> dict[str, Any]:
     """Calcula e grava métricas e comunidades de uma janela.
 
@@ -501,12 +513,16 @@ def analyze_window(
 
     if partition_scope:
         importada = imported_partition(conn, window_start, partition_scope,
-                                       actor_ids, graph_version)
+                                       actor_ids, graph_version,
+                                       partition_window)
         manter = [i for i, a in enumerate(actor_ids) if a in importada]
         descartados = len(actor_ids) - len(manter)
         actor_ids = [actor_ids[i] for i in manter]
         graph = graph.subgraph(manter)
-        scope = f"{view}@{partition_scope}"
+        # A janela entra no nome quando a partição vem de outra semana: sem
+        # isso, dois testes diferentes gravariam no mesmo escopo.
+        scope = (f"{view}@{partition_scope}" if not partition_window
+                 else f"{view}@{partition_window}:{partition_scope}")
 
     if graph.vcount() == 0:
         return {"window_start": window_start, "scope": scope, "nodes": 0,

@@ -747,6 +747,58 @@ class TestConcentracao(unittest.TestCase):
         self.assertGreaterEqual(r["concentracao"]["topn"], r["concentracao"]["top1"])
 
 
+class TestParticaoDeOutraJanela(GraphTestCase):
+    """Separar fusão real de artefato de resolução.
+
+    Quando seis comunidades de uma semana viram uma na seguinte, o E-I não
+    decide nada: fundir comunidades transforma aresta externa em interna, então
+    ele despenca por construção. Aplicar a partição ANTIGA ao grafo NOVO é o que
+    responde — se os grupos continuam internos, foi o Leiden agrupando mais
+    grosso; se passaram a se amplificar entre si, a fusão é real.
+    """
+
+    def setUp(self):
+        super().setUp()
+        graph.analyze_window(self.conn, self.window, view="amp")
+        # uma segunda janela com os MESMOS atores e a mesma estrutura
+        self.outra = "2030-01-07"
+        self.conn.execute(
+            "INSERT INTO edge_window (window_start, scope, src_actor_id, "
+            "dst_actor_id, kind, weight) SELECT ?, scope, src_actor_id, "
+            "dst_actor_id, kind, weight FROM edge_window WHERE window_start=?",
+            (self.outra, self.window))
+
+    def test_grava_em_escopo_que_nomeia_a_janela_de_origem(self):
+        """Sem a janela no nome, dois testes diferentes gravariam no mesmo
+        escopo e o segundo apagaria o primeiro."""
+        r = graph.analyze_window(self.conn, self.outra, view="amp",
+                                 partition_scope="amp",
+                                 partition_window=self.window)
+        self.assertEqual(r["scope"], f"amp@{self.window}:amp")
+
+    def test_particao_antiga_no_grafo_novo_preserva_a_estrutura(self):
+        """Estrutura idêntica nas duas janelas: importar a partição antiga tem
+        de reproduzir o mesmo E-I. Se não reproduzir, a importação está pegando
+        a comunidade errada."""
+        antigo = {r["community_id"]: r["ei_mean"] for r in self.conn.execute(
+            "SELECT community_id, ei_mean FROM community WHERE scope='amp' "
+            "AND window_start=?", (self.window,))}
+        r = graph.analyze_window(self.conn, self.outra, view="amp",
+                                 partition_scope="amp",
+                                 partition_window=self.window)
+        novo = {x["community_id"]: x["ei_mean"] for x in self.conn.execute(
+            "SELECT community_id, ei_mean FROM community WHERE scope=? "
+            "AND window_start=?", (r["scope"], self.outra))}
+        self.assertEqual(set(novo), set(antigo))
+        for community, valor in novo.items():
+            self.assertAlmostEqual(valor, antigo[community], places=6)
+
+    def test_sem_janela_continua_lendo_a_propria(self):
+        r = graph.analyze_window(self.conn, self.window, view="reply",
+                                 partition_scope="amp")
+        self.assertEqual(r["scope"], "reply@amp")
+
+
 class TestCasamentoDeComunidades(unittest.TestCase):
     """Casar por número de comunidade produziria tabela plausível e falsa.
 

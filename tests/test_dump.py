@@ -420,6 +420,31 @@ class TestAnalyzeReporta(unittest.TestCase):
         self.assertIn("têm mais de uma aresta", saida)
 
 
+class TestParseParticao(unittest.TestCase):
+    def test_escopo_puro(self):
+        self.assertEqual(cli._particao("amp:core"), (None, "amp:core"))
+        self.assertEqual(cli._particao("reply@amp:core"), (None, "reply@amp:core"))
+
+    def test_com_janela(self):
+        self.assertEqual(cli._particao("2023-01-16:amp:core"),
+                         ("2023-01-16", "amp:core"))
+
+    def test_vazio(self):
+        self.assertEqual(cli._particao(None), (None, None))
+        self.assertEqual(cli._particao(""), (None, None))
+
+    def test_nao_confunde_escopo_com_data(self):
+        """Escopo nunca começa com uma data; a forma é o que distingue."""
+        self.assertEqual(cli._particao("amp"), (None, "amp"))
+
+    def test_data_sem_escopo_e_recusada(self):
+        """Uma data sozinha não diz QUAL análise daquela semana usar. Adivinhar
+        daria um resultado plausível vindo do escopo errado."""
+        with self.assertRaises(ValueError) as erro:
+            cli._particao("2023-01-16")
+        self.assertIn("amp:core", str(erro.exception))
+
+
 class TestCaminhoDeEntrada(unittest.TestCase):
     """Erro de digitação merece uma frase, não um traceback do zipfile.
 
