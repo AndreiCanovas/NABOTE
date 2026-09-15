@@ -214,6 +214,32 @@ embaralhado, uma partição com E-I −1,0000 exato e desvio 0,00000. O nulo sat
 o z ou não existe ou explode. Também não serviu o excesso analítico sob modelo
 de configuração: ele troca a correlação de −0,49 por +1,00.
 
+#### Carregar um período inteiro, não um prefixo
+
+`--files N` pega os N primeiros arquivos em ordem cronológica. Serve para a
+primeira inspeção e para nada além disso: ele não tem como saber onde uma semana
+termina, então corta no meio. A janela resultante tem volume decidido pelo
+recorte, não pelo mundo — e como a análise agrega por semana, a série temporal
+mente sem avisar.
+
+```bash
+nabote load-x BASE.zip --dry-run                         # o que existe no zip
+nabote load-x BASE.zip --from 2022-12-26 --to 2023-01-01 --no-raw
+```
+
+O relatório de cobertura sai antes de qualquer carga:
+
+```
+semana             dias   termos   situação
+--------------------------------------------------------
+2022-12-26      4/4            2   completa
+2023-01-02      2/3            2   PARCIAL — faltam 1 dia(s): 2023-01-05
+```
+
+"Completa" é relativa ao **zip**, não ao calendário: a coleta original foi em
+dias esparsos de Trending Topics, então uma semana pode legitimamente ter três
+dias. O que o relatório garante é que nenhum dia existente ficou de fora.
+
 #### Dois números que precisam aparecer antes da leitura
 
 **Concentração.** Um grafo pode ter centenas de nós e ser, na prática, uma
@@ -307,7 +333,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-160 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+166 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

@@ -409,6 +409,69 @@ class TestAnalyzeReporta(unittest.TestCase):
         self.assertIn("têm mais de uma aresta", saida)
 
 
+class TestRecortePorData(unittest.TestCase):
+    """Recorte por contagem corta semana no meio; por data, não.
+
+    A análise agrega por janela semanal. Carregar quatro dos sete dias de uma
+    semana produz uma janela cujo volume foi decidido pelo recorte, não pelo
+    mundo — e a série temporal mente sem avisar. Foi o que `--files 5` fez na
+    primeira carga: pegou um prefixo cronológico e partiu a segunda semana.
+    """
+
+    def test_intervalo_inclui_as_duas_pontas(self):
+        self.assertTrue(cli._no_intervalo("2022-12-26", "2022-12-26", "2023-01-01"))
+        self.assertTrue(cli._no_intervalo("2023-01-01", "2022-12-26", "2023-01-01"))
+        self.assertFalse(cli._no_intervalo("2022-12-25", "2022-12-26", "2023-01-01"))
+        self.assertFalse(cli._no_intervalo("2023-01-02", "2022-12-26", "2023-01-01"))
+
+    def test_ponta_aberta(self):
+        self.assertTrue(cli._no_intervalo("1999-01-01", None, "2023-01-01"))
+        self.assertTrue(cli._no_intervalo("2099-01-01", "2022-12-26", None))
+
+    def test_arquivo_sem_data_fica_de_fora(self):
+        """Admitir no banco algo cuja posição no tempo ninguém sabe é pior que
+        deixar de fora."""
+        self.assertFalse(cli._no_intervalo(None, "2022-12-26", "2023-01-01"))
+        self.assertFalse(cli._no_intervalo(None, None, None))
+
+
+class TestCobertura(unittest.TestCase):
+    ZIP = [f"{d}-{t}.parquet"
+           for d in ("2022-12-26", "2022-12-27", "2022-12-29", "2022-12-31",
+                     "2023-01-02", "2023-01-03")
+           for t in ("Alckmin", "Posse")]
+
+    def _parse(self, nome: str):
+        base = nome.removesuffix(".parquet")
+        return base[:10], base[11:]
+
+    def _relatorio(self, selecionados) -> str:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli._cobertura(selecionados, selecionados, set(), self.ZIP, self._parse)
+        return buffer.getvalue()
+
+    def test_semana_inteira_sai_como_completa(self):
+        semana = [m for m in self.ZIP if m < "2022-12-32"]
+        saida = self._relatorio(semana)
+        self.assertIn("2022-12-26", saida)
+        self.assertIn("completa", saida)
+        self.assertNotIn("PARCIAL", saida)
+
+    def test_semana_cortada_e_denunciada_com_os_dias_que_faltam(self):
+        cortada = [m for m in self.ZIP if m.startswith(("2022-12-26", "2022-12-27"))]
+        saida = self._relatorio(cortada)
+        self.assertIn("PARCIAL", saida)
+        self.assertIn("2022-12-29", saida)
+        self.assertIn("2022-12-31", saida)
+
+    def test_so_lista_semanas_com_selecao(self):
+        """Listar semanas vazias enterraria a informação útil em ruído."""
+        saida = self._relatorio([m for m in self.ZIP if m.startswith("2023-01")])
+        self.assertIn("2023-01-02", saida)
+        self.assertNotIn("2022-12-26", saida)
+
+
 class TestArquivoCru(unittest.TestCase):
     """O payload cru é seguro contra bug de parser: reprocessar é grátis,
     recoletar de uma API não é. Carregando de um zip local essa razão some — o

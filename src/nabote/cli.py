@@ -735,6 +735,59 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _no_intervalo(data: str | None, de: str | None, ate: str | None) -> bool:
+    """Data do nome do arquivo dentro do intervalo, inclusive nas duas pontas.
+
+    Arquivo sem data reconhecível fica de fora de qualquer recorte: incluí-lo
+    seria admitir no banco algo cuja posição no tempo ninguém sabe.
+    """
+    if data is None:
+        return False
+    return (de is None or data >= de) and (ate is None or data <= ate)
+
+
+def _cobertura(selecionados, pendentes, feitos, todos, parse) -> None:
+    """Mostra a seleção por SEMANA e diz se cada uma está completa.
+
+    Semana pela metade é o problema silencioso desta base: a análise agrega por
+    janela semanal, então carregar quatro dos sete dias de uma semana produz uma
+    janela cujo volume foi decidido pelo recorte, não pelo mundo. O número sai
+    plausível e a série temporal mente.
+
+    "Completa" aqui é relativa ao ZIP, não ao calendário: a coleta original foi
+    em dias esparsos de Trending Topics, então uma semana pode legitimamente ter
+    três dias. O que importa é não deixar de fora um dia que existe.
+    """
+    por_janela: dict[str, dict[str, set]] = {}
+    for membro in todos:
+        data, termo = parse(membro)
+        if data is None:
+            continue
+        janela = graph.window_start_for(data)
+        alvo = por_janela.setdefault(janela, {"zip": set(), "sel": set(),
+                                              "termos": set()})
+        alvo["zip"].add(data)
+        if membro in selecionados:
+            alvo["sel"].add(data)
+            alvo["termos"].add(termo or "?")
+
+    print(f"\n{'semana':<13}{'dias':>10}{'termos':>9}   situação")
+    print("-" * 56)
+    for janela in sorted(j for j, v in por_janela.items() if v["sel"]):
+        v = por_janela[janela]
+        faltam = v["zip"] - v["sel"]
+        situacao = ("completa" if not faltam
+                    else f"PARCIAL — faltam {len(faltam)} dia(s): "
+                         + ", ".join(sorted(faltam)[:3]))
+        print(f"{janela:<13}{len(v['sel']):>4}/{len(v['zip']):<5}"
+              f"{len(v['termos']):>9}   {situacao}")
+
+    nao_carregados = [m for m in selecionados if m not in pendentes and m not in feitos]
+    if nao_carregados:
+        print(f"\n{len(nao_carregados)} arquivo(s) da seleção ficaram de fora "
+              f"por causa do --files")
+
+
 def cmd_load_x(args: argparse.Namespace) -> int:
     """Carrega a base histórica do X (parquet em zip).
 
@@ -764,6 +817,21 @@ def cmd_load_x(args: argparse.Namespace) -> int:
                 print(f"nenhum arquivo casa com {args.member!r}", file=sys.stderr)
                 return 1
 
+        # Recorte por DATA, não por contagem. `--files N` pega um prefixo
+        # cronológico e não tem como saber onde uma semana termina: corta no
+        # meio, e a janela resultante tem volume decidido por onde a lista foi
+        # truncada. Aí um pico de coleta vira indistinguível de um pico no
+        # mundo, que é exatamente o que o schema foi feito para evitar.
+        if args.date_from or args.date_to:
+            antes = len(membros)
+            membros = [m for m in membros
+                       if _no_intervalo(parse_member_name(m)[0],
+                                        args.date_from, args.date_to)]
+            print(f"recorte por data: {len(membros)} de {antes} arquivos")
+            if not membros:
+                print("nenhum arquivo no intervalo pedido.", file=sys.stderr)
+                return 1
+
         # retomada: pula o que já foi carregado com sucesso
         feitos = {r["query"] for r in conn.execute(
             "SELECT query FROM collection_run WHERE source LIKE 'x_parquet:%' "
@@ -777,7 +845,12 @@ def cmd_load_x(args: argparse.Namespace) -> int:
             print("nada a carregar — tudo já está no banco.")
             return 0
 
-        print(f"carregando {len(pendentes)} de {len(membros)} arquivos\n")
+        _cobertura(membros, pendentes, feitos, members_of(alvo), parse_member_name)
+        if args.dry_run:
+            print("\n--dry-run: nada foi carregado.")
+            return 0
+
+        print(f"\ncarregando {len(pendentes)} de {len(membros)} arquivos\n")
         total = ingest.Stats()
         for i, membro in enumerate(pendentes, 1):
             data, termo = parse_member_name(membro)
@@ -892,6 +965,12 @@ def build_parser() -> argparse.ArgumentParser:
     lx.add_argument("--files", type=int, default=None,
                     help="carrega só os N primeiros arquivos (comece pequeno)")
     lx.add_argument("--member", help="só arquivos cujo nome contenha este texto")
+    lx.add_argument("--from", dest="date_from", metavar="AAAA-MM-DD",
+                    help="carrega só arquivos com data a partir desta (inclusive)")
+    lx.add_argument("--to", dest="date_to", metavar="AAAA-MM-DD",
+                    help="carrega só arquivos com data até esta (inclusive)")
+    lx.add_argument("--dry-run", action="store_true",
+                    help="mostra a cobertura por semana e não carrega nada")
     lx.add_argument("--no-raw", action="store_true",
                     help="não arquiva o payload cru. O arquivo existe porque "
                          "recoletar de uma API custa dinheiro; o zip já está no "
