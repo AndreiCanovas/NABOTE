@@ -559,6 +559,71 @@ class TestEICompravel(unittest.TestCase):
             self.assertLessEqual(r["choice_actors"], r["size"])
 
 
+class TestNucleo(unittest.TestCase):
+    """O núcleo é outra análise, não um filtro bonito.
+
+    No dado real 71% a 79% dos atores aparecem com uma aresta só. A detecção de
+    comunidade no grafo inteiro é conduzida por eles, e "comunidade" acaba
+    querendo dizer "quem amplificou o hub X uma vez" — lista de fãs, não grupo.
+    """
+
+    def _grafo(self, n, arestas):
+        import igraph
+        g = igraph.Graph(directed=True)
+        g.add_vertices(n)
+        g.add_edges(arestas)
+        g.es["weight"] = [1.0] * len(arestas)
+        return g
+
+    def test_poda_ate_o_ponto_fixo(self):
+        """Caminho a→b→c→d: tirar as pontas deixa b e c com uma aresta cada, e
+        eles também precisam sair. Uma passada só pararia em b,c e deixaria um
+        'núcleo' que não é núcleo nenhum."""
+        g = self._grafo(4, [(0, 1), (1, 2), (2, 3)])
+        nucleo, ids = graph.core_subgraph(g, [10, 11, 12, 13])
+        self.assertEqual(nucleo.vcount(), 0)
+        self.assertEqual(ids, [])
+
+    def test_mantem_quem_tem_mais_de_uma_aresta(self):
+        # triângulo (todos com 2 arestas) + uma folha pendurada
+        g = self._grafo(4, [(0, 1), (1, 2), (2, 0), (3, 0)])
+        nucleo, ids = graph.core_subgraph(g, [10, 11, 12, 13])
+        self.assertEqual(sorted(ids), [10, 11, 12])
+        self.assertEqual(nucleo.vcount(), 3)
+
+    def test_ids_acompanham_a_poda(self):
+        """Se os actor_ids não forem reindexados junto, as métricas vão para o
+        ator errado — e o relatório fica plausível e falso."""
+        g = self._grafo(5, [(0, 1), (1, 2), (2, 0), (3, 4)])
+        nucleo, ids = graph.core_subgraph(g, [100, 200, 300, 400, 500])
+        self.assertEqual(sorted(ids), [100, 200, 300])
+        self.assertEqual(nucleo.vcount(), len(ids))
+
+    def test_escopos_convivem_no_banco(self):
+        """Alcance e fechamento são medidas diferentes e as duas têm de caber no
+        banco ao mesmo tempo, sem uma sobrescrever a outra."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "n.db")
+            db.migrate(conn, ROOT / "migrations")
+            events, _ = planted_communities(n_communities=3, per_community=10)
+            ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
+            ingest.ingest(conn, ListSource(scattered_dyads(20), "diades"),
+                          author_tier="C")
+            window = graph.windows_present(conn)[0]
+            graph.aggregate_window(conn, window)
+            cheio = graph.analyze_window(conn, window, view="amp")
+            nucleo = graph.analyze_window(conn, window, view="amp", core=True)
+            escopos = {r["scope"] for r in conn.execute(
+                "SELECT DISTINCT scope FROM actor_metric")}
+            conn.close()
+
+        self.assertEqual(escopos, {"amp", "amp:core"})
+        self.assertEqual(nucleo["scope"], "amp:core")
+        self.assertLess(nucleo["nodes"], cheio["nodes"], "as díades deveriam sair")
+        self.assertGreater(nucleo["core_share"], cheio["core_share"])
+        self.assertLess(nucleo["communities"], cheio["communities"])
+
+
 class TestRelabel(unittest.TestCase):
     def test_ordena_por_tamanho_decrescente(self):
         # rótulos originais: 7 aparece 1×, 3 aparece 3×, 5 aparece 2×

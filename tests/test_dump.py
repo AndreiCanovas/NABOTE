@@ -330,7 +330,7 @@ class TestAnalyzeReporta(unittest.TestCase):
 
     def analyze(self, null: int = 0) -> str:
         args = argparse.Namespace(db=str(self.path), window=None, all=True,
-                                  scope="all", view="amp")
+                                  scope="all", view="amp", core=False)
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             self.assertEqual(cli.cmd_analyze(args), 0)
@@ -342,7 +342,7 @@ class TestAnalyzeReporta(unittest.TestCase):
         número vale."""
         saida = self.analyze()
         self.assertIn("E-I com escolha:", saida)
-        self.assertIn("amplificaram mais de uma vez", saida)
+        self.assertIn("têm mais de uma aresta", saida)
 
 
 class TestMigracaoPendente(unittest.TestCase):

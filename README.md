@@ -214,6 +214,31 @@ embaralhado, uma partição com E-I −1,0000 exato e desvio 0,00000. O nulo sat
 o z ou não existe ou explode. Também não serviu o excesso analítico sob modelo
 de configuração: ele troca a correlação de −0,49 por +1,00.
 
+#### Alcance e fechamento são duas análises
+
+No dado real **71% a 79% dos atores aparecem com uma aresta só**. Isso não é
+ruído: é a forma da rede. E significa que a detecção de comunidade sobre o grafo
+inteiro é conduzida por gente que apareceu uma vez — "comunidade" acaba querendo
+dizer "quem amplificou o hub X uma vez", que é uma lista de fãs, não um grupo.
+
+Daí duas análises que convivem, gravadas em escopos separados:
+
+```bash
+nabote analyze --all --view amp          # escopo amp      — alcance
+nabote analyze --all --view amp --core   # escopo amp:core — fechamento
+```
+
+| | grafo | mede | por quê |
+| --- | --- | --- | --- |
+| `amp` | inteiro | alcance: quem é amplificado, por quantos | a audiência de uma aresta **é** o alcance; tirá-la apagaria o que se quer medir |
+| `amp:core` | só quem tem 2+ arestas | fechamento: quem teve chance de atravessar e não atravessou | quem apareceu uma vez não escolheu nada |
+
+A poda repete até estabilizar: remover quem tem uma aresta reduz o grau de quem
+sobrou e pode deixar alguém novo com uma aresta só. É a ideia do k-core, com
+força ponderada no lugar do grau.
+
+`dump` e `themes` também aceitam `--core` e leem o escopo certo.
+
 #### O número da comunidade
 
 `#0` é sempre a **maior** comunidade da janela, `#1` a segunda, e assim por
@@ -240,7 +265,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-142 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+146 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

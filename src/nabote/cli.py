@@ -224,6 +224,8 @@ def cmd_themes(args: argparse.Namespace) -> int:
             print("nada a mostrar.", file=sys.stderr)
             return 1
         scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
+        if getattr(args, "core", False):
+            scope += ":core"
 
         for window in windows:
             todas = conn.execute(
@@ -333,7 +335,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             return 1
         for window in windows:
             r = graph.analyze_window(conn, window, view=args.view,
-                                     edge_scope=args.scope)
+                                     edge_scope=args.scope, core=args.core)
             if not r["nodes"]:
                 print(f"{window}  vazio para a visão {args.view}")
                 continue
@@ -357,9 +359,13 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 "WHERE window_start=? AND scope=?", (window, r["scope"])
             ).fetchone()["total"] or 1
             atores = linha["atores"] or 0
-            print(f"{'':12}  E-I com escolha: {atores} atores de {todos} "
-                  f"({atores / todos:.0%}) amplificaram mais de uma vez, "
-                  f"em {linha['n']} comunidades")
+            # "amplificaram" seria impreciso: um hub tem muitas arestas de
+            # ENTRADA e pode nunca ter amplificado ninguém. O que a força ≥ 2
+            # garante é mais de uma aresta, logo mais de uma chance de
+            # atravessar para outra comunidade.
+            print(f"{'':12}  E-I com escolha: {atores} de {todos} atores "
+                  f"({atores / todos:.0%}) têm mais de uma aresta, "
+                  f"em {linha['n']} de {r['communities']} comunidades")
         return 0
     finally:
         conn.close()
@@ -402,6 +408,8 @@ def cmd_dump(args: argparse.Namespace) -> int:
             return 1
         window = windows[-1]
         scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
+        if getattr(args, "core", False):
+            scope += ":core"
 
         head = conn.execute(
             "SELECT COUNT(*) AS n FROM actor_metric WHERE window_start=? AND scope=?",
@@ -559,9 +567,9 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                               "author_tier": "A", "no_resume": False}),
         ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all"}),
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
-                                  "view": args.view}),
+                                  "view": args.view, "core": False}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
-                            "min_community": 1, "community": None,
+                            "min_community": 1, "community": None, "core": False,
                             "view": args.view, "top": args.top}),
     ]
     for name, func, extra in steps:
@@ -790,17 +798,23 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--global", dest="global_firehose", action="store_true",
                        help="consome o firehose inteiro, sem filtro de sementes")
 
-    def _janela(p, com_view=False):
+    def _janela(p, com_view=False, com_core=False):
         p.add_argument("--window", help="janela YYYY-MM-DD (segunda-feira)")
         p.add_argument("--all", action="store_true", help="todas as janelas com dado")
         p.add_argument("--scope", default="all", help="'all' ou 'topic:<id>'")
         if com_view:
             p.add_argument("--view", default=graph.DEFAULT_VIEW, choices=sorted(graph.VIEWS),
                            help="amp = repost+citação (padrão) · reply = respostas")
+        if com_core:
+            p.add_argument("--core", action="store_true",
+                           help="só atores com mais de uma aresta, podados até o "
+                                "ponto fixo. Grava em <visão>:core, ao lado da "
+                                "análise cheia — uma mede alcance, a outra "
+                                "fechamento")
         return p
 
     th = _janela(sub.add_parser("themes", help="do que cada comunidade estava falando"),
-                 com_view=True)
+                 com_view=True, com_core=True)
     th.add_argument("--top", type=int, default=20, help="comunidades (padrão: 20)")
     th.add_argument("--terms", type=int, default=5, help="termos por comunidade")
     th.add_argument("--min-community", type=int, default=50, metavar="N",
@@ -812,9 +826,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
     _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
-            com_view=True)
+            com_view=True, com_core=True)
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
-                com_view=True)
+                com_view=True, com_core=True)
     d.add_argument("--top", type=int, default=15)
     d.add_argument("--min-community", type=int, default=1, metavar="N",
                    help="lista TODAS as comunidades com N atores ou mais, "

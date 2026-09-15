@@ -128,9 +128,44 @@ def aggregate_window(
     return cur.rowcount
 
 
+def core_subgraph(graph: Any, actor_ids: list[int],
+                  min_strength: float = CHOICE_STRENGTH) -> tuple[Any, list[int]]:
+    """Subgrafo dos atores com mais de uma aresta, até o ponto fixo.
+
+    Por que isso é uma análise DIFERENTE e não um filtro cosmético: no dado real
+    71% a 79% dos atores aparecem com uma aresta só. A detecção de comunidade no
+    grafo inteiro é conduzida por eles, então "comunidade" acaba significando
+    "quem amplificou o hub X uma vez" — uma lista de fãs, não um grupo.
+
+    Remover quem tem uma aresta reduz o grau de quem sobrou, e pode deixar
+    alguém novo com uma aresta só. Por isso a poda repete até estabilizar; é a
+    ideia do k-core, com força ponderada no lugar do grau.
+
+    Aqui vive a distinção que o instrumento precisa manter:
+
+      alcance     medido no grafo INTEIRO — quem é amplificado e por quantos.
+                  A audiência de uma aresta é o alcance; tirá-la apagaria o que
+                  se quer medir.
+      fechamento  medido só no núcleo — quem teve chance de atravessar e não
+                  atravessou. Quem apareceu uma vez não escolheu nada.
+    """
+    atual = graph
+    ids = list(actor_ids)
+    while atual.vcount():
+        strength = atual.strength(mode="all", weights="weight")
+        manter = [i for i, f in enumerate(strength) if f >= min_strength]
+        if len(manter) == atual.vcount():
+            break
+        if not manter:
+            return atual.subgraph([]), []
+        ids = [ids[i] for i in manter]
+        atual = atual.subgraph(manter)
+    return atual, ids
+
+
 def load_graph(
     conn: sqlite3.Connection, window_start: str, view: str = DEFAULT_VIEW,
-    edge_scope: str = "all",
+    edge_scope: str = "all", core: bool = False,
 ) -> tuple[Any, list[int]]:
     """Monta o igraph da janela. Devolve (grafo, actor_ids por índice)."""
     import igraph
@@ -159,6 +194,8 @@ def load_graph(
     if combined:
         graph.add_edges([(index[s], index[d]) for s, d in combined])
         graph.es["weight"] = list(combined.values())
+    if core:
+        return core_subgraph(graph, actor_ids)
     return graph, actor_ids
 
 
@@ -308,10 +345,18 @@ def compute_metrics(graph: Any, membership: list[int]) -> dict[str, list[float]]
 def analyze_window(
     conn: sqlite3.Connection, window_start: str, view: str = DEFAULT_VIEW,
     edge_scope: str = "all", graph_version: int = GRAPH_VERSION,
+    core: bool = False,
 ) -> dict[str, Any]:
-    """Calcula e grava métricas e comunidades de uma janela."""
+    """Calcula e grava métricas e comunidades de uma janela.
+
+    `core=True` roda tudo sobre o subgrafo de quem tem mais de uma aresta e
+    grava sob o escopo `<view>:core`, ao lado do escopo cheio. As duas análises
+    convivem: uma mede alcance, a outra mede fechamento.
+    """
     scope = view if edge_scope == "all" else f"{view}:{edge_scope}"
-    graph, actor_ids = load_graph(conn, window_start, view, edge_scope)
+    if core:
+        scope += ":core"
+    graph, actor_ids = load_graph(conn, window_start, view, edge_scope, core=core)
 
     if graph.vcount() == 0:
         return {"window_start": window_start, "scope": scope, "nodes": 0,
