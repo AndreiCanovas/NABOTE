@@ -382,9 +382,25 @@ def cmd_dossie(args: argparse.Namespace) -> int:
         eixo = pos_mod.compute_positions(conn, window, scope, view=args.view)
         print(f"eixo: {eixo['atores']} atores posicionados sobre {eixo['alvos']} alvos "
               f"({eixo['descartados']} sem escolha ficaram de fora)", file=sys.stderr)
-        print(f"      dimensão 1 = {eixo['fatia_inercia']:.1%} da inércia "
-              f"(σ₁² {eixo['inercia']:.4f} de {eixo['inercia_total']:.4f}) · "
-              f"{eixo['iteracoes']} iterações", file=sys.stderr)
+        print(f"      σ₁ = {eixo['sigma1']:.4f}  (correlação entre a posição de quem "
+              f"amplifica e a de quem é amplificado) · {eixo['iteracoes']} iterações",
+              file=sys.stderr)
+        print(f"      [a 'fatia da inércia' ({eixo['fatia_inercia']:.1%}) não é "
+              f"interpretável em tabela esparsa: dois blocos perfeitos também dão "
+              f"~0,5%. Use σ₁.]", file=sys.stderr)
+        if eixo["concordancia"] is not None:
+            m = eixo["maiores"]
+            print(f"      sinal do eixo × partição: {eixo['concordancia']:.1%} de "
+                  f"acerto em {eixo['n_comparados']} atores das duas maiores "
+                  f"(#{m[0]['id']} n={m[0]['n']}, #{m[1]['id']} n={m[1]['n']})",
+                  file=sys.stderr)
+            if eixo["concordancia"] > 0.95:
+                print(f"      AVISO: o eixo é praticamente a partição repintada. "
+                      f"Não é uma medida independente das comunidades.",
+                      file=sys.stderr)
+        print(f"      cobertura: {eixo['com_comunidade']} dos {eixo['atores']} "
+              f"posicionados têm comunidade no escopo "
+              f"(a partição tem {eixo['atores_na_particao']})", file=sys.stderr)
         if not eixo["convergiu"] and eixo["atores"]:
             resto = (f"resíduo {eixo['residuo']:.2e}, tolerância {pos_mod.TOL:.0e}"
                      if eixo["residuo"] is not None else "sem solução")

@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 import random
 import sqlite3
+from collections import Counter
 from typing import Any, Iterable
 
 from .db import utcnow
@@ -40,8 +41,9 @@ AXIS = "amp"
 # Forma única do diagnóstico. Definida num lugar só porque os três caminhos de
 # saída precisam das MESMAS chaves: quem consome não pode ter que descobrir
 # quais existem em qual caso.
-DIAG_VAZIO = {"convergiu": False, "inercia": 0.0, "inercia_total": 0.0,
-              "fatia_inercia": 0.0, "iteracoes": 0, "residuo": None}
+DIAG_VAZIO = {"convergiu": False, "sigma1": 0.0, "inercia": 0.0,
+              "inercia_total": 0.0, "fatia_inercia": 0.0,
+              "iteracoes": 0, "residuo": None}
 
 # Abaixo disto o ator não escolheu: amplificou uma conta só.
 MIN_ALVOS = 2
@@ -130,9 +132,18 @@ def _dimensao_1(matriz: dict[tuple[int, int], float],
     a_ij = [(li[i], ci[j], (w / total) / math.sqrt(r[li[i]] * c[ci[j]]))
             for (i, j), w in matriz.items()]
     raiz_c = [math.sqrt(x) for x in c]
-    # Inércia total = χ²/N = Σ a_ij² − 1. Sai de graça do que já foi calculado,
-    # e é o denominador que transforma σ₁² em "% da inércia" — sem ele o número
-    # sozinho não diz se a dimensão 1 explica muito ou pouco.
+    # Inércia total = χ²/N = Σ a_ij² − 1.
+    #
+    # ATENÇÃO ao usar isto como denominador. Em tabela esparsa — e esta é
+    # esparsíssima: 20 mil amplificadores, mil e poucos alvos, dois alvos por
+    # amplificador — a inércia total é dominada pelo número de células vazias,
+    # não pela estrutura. Medido: duas metades PERFEITAMENTE separadas, com
+    # σ₁ = 1,000, dão 0,5% da inércia. A "% da inércia explicada" que faz
+    # sentido numa tabela de contingência densa aqui não mede nada.
+    #
+    # O número interpretável é σ₁ sozinho: é a correlação canônica entre o
+    # escore de quem amplifica e o escore de quem é amplificado. σ₁ = 0,99 quer
+    # dizer que saber a posição de um prevê quase exatamente a do outro.
     inercia_total = sum(a * a for _, _, a in a_ij) - 1.0
 
     def a_vec(v: list[float]) -> list[float]:
@@ -175,7 +186,7 @@ def _dimensao_1(matriz: dict[tuple[int, int], float],
             convergiu = True
             break
 
-    diag = {"convergiu": convergiu, "inercia": sigma2,
+    diag = {"convergiu": convergiu, "sigma1": math.sqrt(sigma2), "inercia": sigma2,
             "inercia_total": inercia_total,
             "fatia_inercia": (sigma2 / inercia_total) if inercia_total > 0 else 0.0,
             "iteracoes": gastas, "residuo": residuo}
@@ -210,6 +221,41 @@ def _normalizar(escores: dict[int, float]) -> dict[int, float]:
     return {a: s / maior for a, s in escores.items()}
 
 
+def _concordancia(escores: dict[int, float],
+                  comunidade: dict[int, int]) -> dict[str, Any]:
+    """O eixo é um achado, ou é a partição do Leiden repintada?
+
+    Esta é a pergunta que decide se a seção vale existir. Se o sinal do escore
+    prevê a comunidade com 99% de acerto, o "eixo de posicionamento" não
+    acrescenta nada ao que a detecção de comunidade já tinha dito — e apresentá-lo
+    como uma medida independente seria vender duas vezes o mesmo achado.
+
+    Compara só as DUAS maiores comunidades: com 23 comunidades, a pergunta
+    "o eixo separa os grupos?" só é respondível entre os que têm tamanho.
+    """
+    tamanhos: Counter = Counter(comunidade[a] for a in escores if a in comunidade)
+    if len(tamanhos) < 2:
+        return {"concordancia": None, "n_comparados": 0, "maiores": []}
+    (c1, n1), (c2, n2) = tamanhos.most_common(2)
+    acertos = 0
+    lados: dict[int, dict[str, int]] = {c1: {"neg": 0, "pos": 0},
+                                        c2: {"neg": 0, "pos": 0}}
+    for a, s in escores.items():
+        cid = comunidade.get(a)
+        if cid in lados:
+            lados[cid]["neg" if s < 0 else "pos"] += 1
+    # a melhor das duas atribuições de sinal: o rótulo em si é convenção
+    acertos = max(lados[c1]["neg"] + lados[c2]["pos"],
+                  lados[c1]["pos"] + lados[c2]["neg"])
+    total = n1 + n2
+    return {
+        "concordancia": acertos / total if total else None,
+        "n_comparados": total,
+        "maiores": [{"id": c1, "n": n1, **lados[c1]},
+                    {"id": c2, "n": n2, **lados[c2]}],
+    }
+
+
 def compute_positions(
     conn: sqlite3.Connection, window_start: str, scope: str,
     view: str = "amp", graph_version: int = GRAPH_VERSION,
@@ -229,7 +275,9 @@ def compute_positions(
     if not matriz:
         return {"scope": scope, "atores": 0, "alvos": 0,
                 "descartados": len({i for i, _ in bruto}),
-                "decis": [], "fatia_no_meio": 0.0, **DIAG_VAZIO}
+                "decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
+                "atores_na_particao": 0, "concordancia": None,
+                "n_comparados": 0, "maiores": [], **DIAG_VAZIO}
 
     comunidade = {
         r["actor_id"]: r["community_id"] for r in conn.execute(
@@ -241,7 +289,9 @@ def compute_positions(
     if not escores:
         return {"scope": scope, "atores": 0, "alvos": 0,
                 "descartados": len({i for i, _ in bruto}),
-                "decis": [], "fatia_no_meio": 0.0, **diag}
+                "decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
+                "atores_na_particao": len(comunidade), "concordancia": None,
+                "n_comparados": 0, "maiores": [], **diag}
 
     escores = _normalizar(_orientar(escores, comunidade))
     extremos = sorted(escores, key=lambda a: escores[a])
@@ -266,12 +316,19 @@ def compute_positions(
     decis = [ordenados[min(n - 1, (n * k) // 10)] for k in range(11)]
     meio = sum(1 for s in ordenados if abs(s) < 0.25)
 
+    with_com = sum(1 for a in escores if a in comunidade)
     return {
         "scope": scope, "atores": len(escores),
         "alvos": len({j for _, j in matriz}),
         "descartados": len({i for i, _ in bruto}) - len(escores),
         "ancoras": sorted(ancoras),
         "decis": decis, "fatia_no_meio": meio / n if n else 0.0,
+        # cobertura: o eixo sai do grafo cheio da pauta, a partição sai do
+        # núcleo. São filtros diferentes, então a interseção precisa aparecer
+        # antes que alguém leia "eixo médio da comunidade" como cobrindo todos.
+        "com_comunidade": with_com,
+        "atores_na_particao": len(comunidade),
+        **_concordancia(escores, comunidade),
         **diag,
     }
 

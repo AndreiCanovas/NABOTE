@@ -385,6 +385,17 @@ conta converge para a dimensão que ordena por TAMANHO, e a tabela sai plausíve
 medindo volume em vez de posição — é o que `test_nao_e_so_tamanho_disfarcado`
 existe para impedir.
 
+**Leia σ₁, não "% da inércia".** A matriz é esparsíssima (20 mil amplificadores,
+mil e poucos alvos, dois alvos por amplificador) e nesse regime a inércia total
+é dominada por células vazias: duas metades *perfeitamente* separadas, com
+σ₁ = 1,000, aparecem como 0,5% da inércia. O número interpretável é σ₁ sozinho —
+a correlação entre a posição de quem amplifica e a de quem é amplificado.
+
+O comando também reporta **quanto o sinal do eixo coincide com a partição do
+Leiden**. Acima de 95% ele avisa: o eixo virou a partição repintada e não é uma
+medida independente das comunidades. É a diferença entre um achado e o mesmo
+achado vendido duas vezes.
+
 As sub-pautas usam poda progressiva (só monta trigrama cujos bigramas passaram
 no corte). Sem ela, um corpus de 143 mil posts gera milhões de n-gramas
 distintos e o processo morre por memória; com ela são 6 s e 152 MB.

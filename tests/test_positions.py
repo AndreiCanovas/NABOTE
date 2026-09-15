@@ -276,7 +276,9 @@ class TestFormaDoDiagnostico(unittest.TestCase):
     """
 
     ESPERADAS = set(positions.DIAG_VAZIO) | {
-        "scope", "atores", "alvos", "descartados", "decis", "fatia_no_meio"}
+        "scope", "atores", "alvos", "descartados", "decis", "fatia_no_meio",
+        "com_comunidade", "atores_na_particao", "concordancia",
+        "n_comparados", "maiores"}
 
     def _chaves(self, conn, window, scope):
         return set(positions.compute_positions(conn, window, scope, persist=False))
@@ -302,3 +304,52 @@ class TestFormaDoDiagnostico(unittest.TestCase):
             cheio = self._chaves(conn, w, "amp:core")
             self.assertEqual(cheio - {"ancoras"}, self.ESPERADAS)
             conn.close()
+
+
+class TestRedundanciaComAParticao(EixoTestCase):
+    """A pergunta que decide se a seção do eixo vale existir.
+
+    Se o sinal do escore prevê a comunidade com quase 100% de acerto, o eixo
+    não acrescenta nada ao que o Leiden já disse, e apresentá-lo como medida
+    independente venderia duas vezes o mesmo achado.
+    """
+
+    def test_em_blocos_plantados_o_eixo_concorda_com_a_particao(self):
+        """Neste fixture os blocos SÃO a estrutura, então a concordância alta é
+        o resultado correto — e é justamente por isso que ela precisa ser
+        medida e reportada, não presumida baixa."""
+        d = positions.compute_positions(self.conn, self.window, self.scope)
+        self.assertIsNotNone(d["concordancia"])
+        self.assertGreater(d["n_comparados"], 0)
+        self.assertGreater(d["concordancia"], 0.8)
+        self.assertEqual(len(d["maiores"]), 2)
+        for m in d["maiores"]:
+            self.assertEqual(m["n"], m["neg"] + m["pos"])
+
+    def test_concordancia_nao_depende_do_sinal_escolhido(self):
+        """O rótulo do lado é convenção. Se a medida dependesse dele, inverter
+        o eixo transformaria 95% de acerto em 5%."""
+        escores = {1: -0.9, 2: -0.8, 3: 0.7, 4: 0.9}
+        com = {1: 0, 2: 0, 3: 1, 4: 1}
+        a = positions._concordancia(escores, com)
+        b = positions._concordancia({k: -v for k, v in escores.items()}, com)
+        self.assertEqual(a["concordancia"], b["concordancia"])
+        self.assertEqual(a["concordancia"], 1.0)
+
+    def test_eixo_ortogonal_a_particao_da_concordancia_de_meio_a_meio(self):
+        escores = {1: -0.9, 2: 0.8, 3: -0.7, 4: 0.9}
+        com = {1: 0, 2: 0, 3: 1, 4: 1}
+        d = positions._concordancia(escores, com)
+        self.assertEqual(d["concordancia"], 0.5)
+
+    def test_uma_comunidade_so_nao_da_para_comparar(self):
+        d = positions._concordancia({1: -0.5, 2: 0.5}, {1: 0, 2: 0})
+        self.assertIsNone(d["concordancia"])
+
+    def test_cobertura_da_particao_e_declarada(self):
+        """O eixo sai do grafo cheio da pauta; a partição, do núcleo. São
+        filtros diferentes e a interseção precisa aparecer antes que alguém
+        leia 'eixo médio da comunidade' como cobrindo todos."""
+        d = positions.compute_positions(self.conn, self.window, self.scope)
+        self.assertLessEqual(d["com_comunidade"], d["atores"])
+        self.assertGreater(d["atores_na_particao"], 0)
