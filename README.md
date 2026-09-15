@@ -385,6 +385,18 @@ conta converge para a dimensão que ordena por TAMANHO, e a tabela sai plausíve
 medindo volume em vez de posição — é o que `test_nao_e_so_tamanho_disfarcado`
 existe para impedir.
 
+**A dimensão 1 pode degenerar.** No dado real (Yanomami, S04) σ₁ deu 0,993 e as
+comunidades #1 a #7 caíram TODAS em +0,285 ± 0,003, contra −0,954 da #0: com um
+bloco quase desconexo, a primeira dimensão vira o indicador daquele bloco — um
+teste de "é a #0 ou não" — e não um eixo de posições. Por isso o comando calcula
+**duas** dimensões e avisa quando a primeira degenera; o posicionamento que
+sobra está na segunda.
+
+**Δ entre janelas é de POSTO, não de escore.** Cada janela renormaliza pelo
+próprio extremo e ancora o sinal na própria comunidade #0, que não é a mesma de
+uma semana para a outra. Comparar escores crus deu Δ ≈ +0,287 idêntico para seis
+perfis de comunidades diferentes — reescala, não movimento.
+
 **Leia σ₁, não "% da inércia".** A matriz é esparsíssima (20 mil amplificadores,
 mil e poucos alvos, dois alvos por amplificador) e nesse regime a inércia total
 é dominada por células vazias: duas metades *perfeitamente* separadas, com

@@ -34,6 +34,7 @@ from typing import Any
 
 from .graph import (GRAPH_VERSION, LEIDEN_SEED, VIEWS, TOPIC_PREFIX,
                     edge_scope_of, _rng)
+from .positions import AXIS
 
 # Nós no mapa. Acima disso a figura vira mancha; abaixo, some a estrutura.
 MAPA_TOP = 60
@@ -443,7 +444,9 @@ def _frequentes(docs, comunidade, n: int, anteriores: set[str] | None,
     doc_freq: Counter = Counter()
     textos_freq: Counter = Counter()
     por_com: dict[int, Counter] = {}
+    textos_com: dict[int, Counter] = {}
     vistos_por_texto: dict[str, set[str]] = {}
+    ja_na_com: dict[int, set[str]] = {}
     for actor_id, texto in docs:
         if texto in vistos_por_texto:
             vistos = vistos_por_texto[texto]
@@ -465,9 +468,15 @@ def _frequentes(docs, comunidade, n: int, anteriores: set[str] | None,
         cid = comunidade.get(actor_id)
         if cid is not None:
             por_com.setdefault(cid, Counter()).update(vistos)
+            # texto distinto conta uma vez POR COMUNIDADE: o número global
+            # apareceria ao lado de um número local e daria "426 textos em
+            # 218 posts", que é impossível de ler e foi o que saiu na S04
+            if texto not in ja_na_com.setdefault(cid, set()):
+                ja_na_com[cid].add(texto)
+                textos_com.setdefault(cid, Counter()).update(vistos)
     sobrevivem = {g for g in doc_freq
                   if doc_freq[g] >= min_posts and textos_freq[g] >= min_textos}
-    return doc_freq, por_com, sobrevivem, textos_freq
+    return doc_freq, por_com, sobrevivem, textos_com
 
 
 def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
@@ -504,7 +513,7 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
                 for a, t in docs]
 
     freq: dict[str, int] = {}
-    textos: dict[str, int] = {}
+    textos: dict[int, dict[str, int]] = {}
     contagem: dict[int, Counter] = {}
     posts_com: Counter = Counter()
     for actor_id, _ in docs:
@@ -514,12 +523,16 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
 
     sobrevivem: set[str] | None = None
     for n in range(1, NGRAM_MAX + 1):
-        doc_freq, por_com, sobrevivem_n, textos_n = _frequentes(
+        doc_freq, por_com, sobrevivem_n, textos_com_n = _frequentes(
             docs, comunidade, n, sobrevivem, min_posts, min_textos)
         if not sobrevivem_n:
             break
         freq.update({g: doc_freq[g] for g in sobrevivem_n})
-        textos.update({g: textos_n[g] for g in sobrevivem_n})
+        for cid, c in textos_com_n.items():
+            alvo = textos.setdefault(cid, {})
+            for g in sobrevivem_n:
+                if c[g]:
+                    alvo[g] = c[g]
         for cid, c in por_com.items():
             alvo = contagem.setdefault(cid, Counter())
             for g in sobrevivem_n:
@@ -579,7 +592,7 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
             topo = autores[(cid, termo)].most_common(CONCENTRACAO_TOP)
             linhas.append({
                 "comunidade": cid, "termo": termo, "posts": n,
-                "textos": textos.get(termo, 0),
+                "textos": textos.get(cid, {}).get(termo, 0),
                 "share": share, "lift": lift,
                 "concentracao": sum(c for _, c in topo) / n if n else 0.0,
                 "top_autores": [a for a, _ in topo],
@@ -628,7 +641,15 @@ def top_actors(conn: sqlite3.Connection, window_start: str, scope: str,
         f"SELECT actor_id, handle, tier, is_public_figure FROM actor "
         f"WHERE actor_id IN ({marcas})", ids)}
     eixo = positions_of(conn, window_start, scope, ids)
+    eixo2 = positions_of(conn, window_start, scope, ids, axis=f"{AXIS}2")
+    # O Δ do ESCORE entre janelas não é comparável: cada janela renormaliza
+    # pelo próprio extremo e ancora o sinal na própria comunidade #0, que não
+    # é a mesma de uma semana para a outra. Na S04 isso produziu Δ ≈ +0,287
+    # idêntico para seis perfis de comunidades diferentes — era a reescala, não
+    # movimento. Fica o POSTO relativo, que sobrevive a reescala monótona.
     antes = positions_of(conn, janela_anterior, scope) if janela_anterior else {}
+    posto_antes = _postos(antes)
+    posto_agora = _postos(positions_of(conn, window_start, scope))
 
     saida = []
     for r in linhas:
@@ -639,10 +660,21 @@ def top_actors(conn: sqlite3.Connection, window_start: str, scope: str,
             "figura_publica": bool(meta[a]["is_public_figure"]) if a in meta else False,
             "comunidade": com.get(a), "pagerank": r["value"],
             "in_degree": indeg.get(a), "ei": ei.get(a),
-            "eixo": eixo.get(a),
-            "delta_eixo": (eixo[a] - antes[a]) if a in eixo and a in antes else None,
+            "eixo": eixo.get(a), "eixo2": eixo2.get(a),
+            "posto": posto_agora.get(a),
+            "delta_posto": (posto_agora[a] - posto_antes[a])
+                           if a in posto_agora and a in posto_antes else None,
         })
     return saida
+
+
+def _postos(escores: dict[int, float]) -> dict[int, float]:
+    """Posição relativa em [0,1]. Sobrevive a reescala; o escore cru não."""
+    if not escores:
+        return {}
+    ordem = sorted(escores, key=lambda a: escores[a])
+    n = len(ordem) - 1 or 1
+    return {a: i / n for i, a in enumerate(ordem)}
 
 
 def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
@@ -652,13 +684,18 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
     from .positions import positions_of
 
     eixo = positions_of(conn, window_start, scope)
+    eixo2 = positions_of(conn, window_start, scope, axis=f"{AXIS}2")
     membro = {r["actor_id"]: r["community_id"] for r in conn.execute(
         "SELECT actor_id, community_id FROM actor_community WHERE window_start = ? "
         "AND scope = ? AND graph_version = ?", (window_start, scope, graph_version))}
     por_com: dict[int, list[float]] = {}
+    por_com2: dict[int, list[float]] = {}
     for a, s in eixo.items():
         if a in membro:
             por_com.setdefault(membro[a], []).append(s)
+    for a, s in eixo2.items():
+        if a in membro:
+            por_com2.setdefault(membro[a], []).append(s)
 
     termos: dict[int, list[dict[str, Any]]] = {}
     for linha in (subpautas or {}).get("linhas", []):
@@ -677,6 +714,8 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
             "n_escolha": r["choice_actors"],
             "eixo": (sum(medias) / len(medias)) if medias else None,
             "n_eixo": len(medias),
+            "eixo2": ((sum(por_com2[cid]) / len(por_com2[cid]))
+                      if por_com2.get(cid) else None),
             "termos": termos.get(cid, []),
         })
     return saida

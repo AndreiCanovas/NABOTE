@@ -382,22 +382,22 @@ def cmd_dossie(args: argparse.Namespace) -> int:
         eixo = pos_mod.compute_positions(conn, window, scope, view=args.view)
         print(f"eixo: {eixo['atores']} atores posicionados sobre {eixo['alvos']} alvos "
               f"({eixo['descartados']} sem escolha ficaram de fora)", file=sys.stderr)
-        print(f"      σ₁ = {eixo['sigma1']:.4f}  (correlação entre a posição de quem "
-              f"amplifica e a de quem é amplificado) · {eixo['iteracoes']} iterações",
-              file=sys.stderr)
-        print(f"      [a 'fatia da inércia' ({eixo['fatia_inercia']:.1%}) não é "
-              f"interpretável em tabela esparsa: dois blocos perfeitos também dão "
-              f"~0,5%. Use σ₁.]", file=sys.stderr)
-        if eixo["concordancia"] is not None:
-            m = eixo["maiores"]
-            print(f"      sinal do eixo × partição: {eixo['concordancia']:.1%} de "
-                  f"acerto em {eixo['n_comparados']} atores das duas maiores "
-                  f"(#{m[0]['id']} n={m[0]['n']}, #{m[1]['id']} n={m[1]['n']})",
+        for r in eixo["dimensoes"]:
+            if not r["atores"]:
+                continue
+            conc = (f" · {r['concordancia']:.0%} de acerto vs. partição"
+                    if r["concordancia"] is not None else "")
+            print(f"      dim {r['dim']}: σ = {r['sigma1']:.4f} · "
+                  f"{r['fatia_no_meio']:.1%} entre −0,25 e +0,25{conc} · "
+                  f"{r['iteracoes']} iter{'' if r['convergiu'] else ' NÃO CONVERGIU'}",
                   file=sys.stderr)
-            if eixo["concordancia"] > 0.95:
-                print(f"      AVISO: o eixo é praticamente a partição repintada. "
-                      f"Não é uma medida independente das comunidades.",
-                      file=sys.stderr)
+        if eixo["degenerada"]:
+            print(f"      AVISO: a dimensão 1 degenerou em indicador de bloco — "
+                  f"reproduz a partição e não é eixo de posição. Use a dimensão 2.",
+                  file=sys.stderr)
+        print(f"      [σ é a correlação entre a posição de quem amplifica e a de "
+              f"quem é amplificado. A 'fatia da inércia' não é interpretável em "
+              f"tabela esparsa.]", file=sys.stderr)
         print(f"      cobertura: {eixo['amplificados']} amplificados + "
               f"{eixo['amplificadores']} amplificadores · {eixo['com_comunidade']} "
               f"dos {eixo['atores']} têm comunidade no escopo "

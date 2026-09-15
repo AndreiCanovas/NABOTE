@@ -79,9 +79,16 @@ class DossieTestCase(unittest.TestCase):
         rotulados = []
         for com in (0, 1):
             for i in range(40):
+                # Três alvos por comunidade, não um. Com um alvo só, todo
+                # amplificador tem escolha zero e o eixo é incomputável por
+                # construção — o que é o comportamento certo do código e o
+                # fixture errado para testar posicionamento.
+                # 14 e 3 são coprimos de propósito: com 15 e 3 (que têm fator
+                # comum) cada amplificador cai SEMPRE no mesmo alvo, todo mundo
+                # fica com escolha zero e o eixo volta vazio.
                 rotulados.append(_post(
-                    f"did:plc:sint{com:02d}{(i % 15) + 1:03d}",
-                    f"did:plc:sint{com:02d}000",
+                    f"did:plc:sint{com:02d}{(i % 14) + 1:03d}",
+                    f"did:plc:sint{com:02d}{(i % 3):03d}",
                     f"p{com}-{i}",
                     (inicio + timedelta(minutes=7 * i + com)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     texto=f"{self.PAUTA} {_texto(com, i)}"))
@@ -280,9 +287,14 @@ class TestSubPautas(DossieTestCase):
         for linha in r["linhas"]:
             por_com.setdefault(linha["comunidade"], set()).add(linha["termo"])
         self.assertGreaterEqual(len(por_com), 2, "não separou as comunidades")
-        todos = [t for termos in por_com.values() for t in termos]
-        self.assertEqual(len(todos), len(set(todos)),
-                         "o mesmo termo saiu como distintivo de duas comunidades")
+        # O que importa não é o termo ser globalmente único — duas
+        # sub-comunidades do mesmo lado podem partilhar vocabulário — e sim os
+        # DOIS vocabulários plantados não se misturarem numa comunidade só.
+        for cid, termos in por_com.items():
+            lados = {lado for lado, vocab in VOCAB.items()
+                     for t in termos if set(t.split()) & set(vocab)}
+            self.assertLessEqual(len(lados), 1,
+                                 f"comunidade {cid} misturou os dois vocabulários: {termos}")
 
     def test_nao_devolve_o_proprio_termo_da_coleta(self):
         """Yanomami está em 100% dos posts por construção da coleta. Se ele
@@ -341,12 +353,40 @@ class TestAtoresEComunidades(DossieTestCase):
         valores = [r["pagerank"] for r in linhas]
         self.assertEqual(valores, sorted(valores, reverse=True))
 
-    def test_delta_do_eixo_so_existe_com_janela_anterior(self):
+    def test_delta_e_de_POSTO_e_nao_de_escore(self):
+        """O Δ do escore cru não é comparável entre janelas: cada uma
+        renormaliza pelo próprio extremo e ancora o sinal na própria #0. Na S04
+        isso deu Δ ≈ +0,287 idêntico para seis perfis de comunidades
+        diferentes — reescala, não movimento. O posto sobrevive a isso."""
         from nabote import positions
         positions.compute_positions(self.conn, self.window, self.scope)
         linhas = dossie.top_actors(self.conn, self.window, self.scope, limit=5)
         for r in linhas:
-            self.assertIsNone(r["delta_eixo"])
+            self.assertNotIn("delta_eixo", r)
+            self.assertIsNone(r["delta_posto"], "sem janela anterior não há Δ")
+            if r["posto"] is not None:
+                self.assertGreaterEqual(r["posto"], 0.0)
+                self.assertLessEqual(r["posto"], 1.0)
+
+    def test_o_posto_e_imune_a_reescala(self):
+        """Duplicar todos os escores muda todo Δ de escore e nenhum posto."""
+        a = dossie._postos({1: -0.9, 2: 0.1, 3: 0.5})
+        b = dossie._postos({1: -1.8, 2: 0.2, 3: 1.0})
+        self.assertEqual(a, b)
+        self.assertEqual(sorted(a.values()), [0.0, 0.5, 1.0])
+
+    def test_a_segunda_dimensao_chega_na_tabela(self):
+        """Quando a dimensão 1 degenera em indicador de bloco, é a 2 que
+        carrega posicionamento. Se ela não chegar à tabela, a seção fica sem
+        nada para mostrar."""
+        from nabote import positions
+        positions.compute_positions(self.conn, self.window, self.scope)
+        linhas = dossie.top_actors(self.conn, self.window, self.scope, limit=5)
+        self.assertTrue(linhas)
+        for r in linhas:
+            self.assertIn("eixo2", r)
+        self.assertTrue(any(r["eixo2"] is not None for r in linhas),
+                        "nenhum ator recebeu a dimensão 2")
 
     def test_cartoes_de_comunidade_juntam_eixo_e_termos(self):
         from nabote import positions
@@ -552,3 +592,52 @@ class TestContaminacaoPorViral(DossieTestCase):
         for linha in r["linhas"]:
             self.assertIn("textos", linha)
             self.assertLessEqual(linha["textos"], linha["posts"])
+
+
+class TestTextosPorComunidade(DossieTestCase):
+    """`textos` tem de ser da MESMA comunidade que `posts`.
+
+    Na S04 saiu uma linha com posts=218 e textos=426 — impossível de ler, e o
+    motivo era que `posts` contava a comunidade e `textos` contava o corpus
+    inteiro. Dois recortes diferentes lado a lado na mesma linha.
+    """
+
+    def test_textos_nunca_passa_de_posts(self):
+        for com in (0, 1):
+            inicio = datetime(2026, 9, 17, 10, 0, 0, tzinfo=timezone.utc)
+            eventos = [_post(f"did:plc:sint{com:02d}{(i % 15) + 1:03d}",
+                             f"did:plc:sint{com:02d}000", f"tc{com}-{i}",
+                             (inicio + timedelta(minutes=4 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             texto=f"{self.PAUTA} crise {_texto(com, i)}")
+                       for i in range(50)]
+            ingest.ingest(self.conn, Fonte(f"tc{com}", eventos), kind="campanha",
+                          campaign_label=self.PAUTA, author_tier="C", resume=False)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
+        self.assertTrue(r["linhas"])
+        for linha in r["linhas"]:
+            self.assertLessEqual(
+                linha["textos"], linha["posts"],
+                f"textos > posts na mesma linha: {linha}")
+
+    def test_um_termo_compartilhado_conta_separado_em_cada_comunidade(self):
+        """'crise' aparece nas duas: cada linha precisa do próprio número."""
+        for com in (0, 1):
+            inicio = datetime(2026, 9, 17, 11, 0, 0, tzinfo=timezone.utc)
+            n = 60 if com == 0 else 12
+            eventos = [_post(f"did:plc:sint{com:02d}{(i % 15) + 1:03d}",
+                             f"did:plc:sint{com:02d}000", f"sh{com}-{i}",
+                             (inicio + timedelta(minutes=4 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             texto=f"{self.PAUTA} crise {_texto(com, i)} n{i}")
+                       for i in range(n)]
+            ingest.ingest(self.conn, Fonte(f"sh{com}", eventos), kind="campanha",
+                          campaign_label=self.PAUTA, author_tier="C", resume=False)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3, por_comunidade=8)
+        linhas = {(l["comunidade"], l["termo"]): l for l in r["linhas"]
+                  if l["termo"] == "crise"}
+        if len(linhas) >= 2:
+            valores = {k[0]: v["textos"] for k, v in linhas.items()}
+            self.assertNotEqual(len(set(valores.values())), 1,
+                                f"as duas comunidades receberam o mesmo número "
+                                f"global de textos: {valores}")
