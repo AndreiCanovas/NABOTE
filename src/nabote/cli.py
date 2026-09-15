@@ -398,8 +398,9 @@ def cmd_dossie(args: argparse.Namespace) -> int:
                 print(f"      AVISO: o eixo é praticamente a partição repintada. "
                       f"Não é uma medida independente das comunidades.",
                       file=sys.stderr)
-        print(f"      cobertura: {eixo['com_comunidade']} dos {eixo['atores']} "
-              f"posicionados têm comunidade no escopo "
+        print(f"      cobertura: {eixo['amplificados']} amplificados + "
+              f"{eixo['amplificadores']} amplificadores · {eixo['com_comunidade']} "
+              f"dos {eixo['atores']} têm comunidade no escopo "
               f"(a partição tem {eixo['atores_na_particao']})", file=sys.stderr)
         if not eixo["convergiu"] and eixo["atores"]:
             resto = (f"resíduo {eixo['residuo']:.2e}, tolerância {pos_mod.TOL:.0e}"
@@ -419,6 +420,18 @@ def cmd_dossie(args: argparse.Namespace) -> int:
         if not sub["posts_com_texto"]:
             print(f"aviso: 0 de {sub['posts']} posts têm texto no banco — a seção "
                   f"de sub-pautas sai vazia.", file=sys.stderr)
+        else:
+            print(f"sub-pautas: {sub['textos_distintos']} textos distintos em "
+                  f"{sub['posts_com_texto']} posts "
+                  f"({1 - sub['textos_distintos'] / sub['posts_com_texto']:.0%} são "
+                  f"repetição de texto já visto) → {len(sub['linhas'])} termos",
+                  file=sys.stderr)
+        mapa = saida["mapa"]
+        if mapa["nos"]:
+            print(f"mapa: {len(mapa['nos'])} de {mapa['de']} atores · "
+                  f"{len(mapa['arestas'])} ligações por audiência compartilhada · "
+                  f"apenas {mapa['arestas_diretas']} arestas diretas de amplificação "
+                  f"entre eles (peso {mapa['peso_direto']:.0f})", file=sys.stderr)
         co = saida["coamplificacao"]
         print(f"coamplificação: {co['grupos'] - co['grupos_ignorados']} de "
               f"{co['grupos']} alvos considerados "

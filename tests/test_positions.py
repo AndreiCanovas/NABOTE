@@ -100,7 +100,10 @@ class TestSeparacao(EixoTestCase):
         self.assertEqual(sum(r["is_anchor"] for r in linhas), 2)
         self.assertEqual(linhas[0]["is_anchor"], 1)
         self.assertEqual(linhas[-1]["is_anchor"], 1)
-        self.assertAlmostEqual(abs(linhas[0]["score"]), 1.0, places=6)
+        # a escala é normalizada pelo MAIOR módulo; qual das duas pontas o
+        # atinge depende do dado, não da mecânica
+        self.assertAlmostEqual(max(abs(linhas[0]["score"]), abs(linhas[-1]["score"])),
+                               1.0, places=6)
 
     def test_escala_fica_dentro_de_menos_um_e_mais_um(self):
         positions.compute_positions(self.conn, self.window, self.scope)
@@ -158,7 +161,7 @@ class TestQuemNaoTemPosicao(EixoTestCase):
     def test_grafo_sem_escolha_nenhuma_devolve_vazio_em_vez_de_inventar(self):
         matriz = {(1, 100): 3.0, (2, 200): 5.0, (3, 300): 1.0}
         self.assertEqual(positions._podar(matriz), {})
-        escores, diag = positions._dimensao_1({})
+        escores, _, diag = positions._dimensao_1({})
         self.assertEqual(escores, {})
         self.assertFalse(diag["convergiu"])
 
@@ -181,7 +184,7 @@ class TestMatrizConhecida(unittest.TestCase):
         matriz[(99, 101)] = 2.0        # atravessador: um pé em cada lado
         matriz[(99, 201)] = 2.0
 
-        escores, diag = positions._dimensao_1(matriz)
+        escores, _, diag = positions._dimensao_1(matriz)
         self.assertGreater(diag["inercia"], 0.0)
         self.assertTrue(diag["convergiu"], "não convergiu num caso trivial")
         esq = sum(escores[i] for i in range(1, 9)) / 8
@@ -194,7 +197,7 @@ class TestMatrizConhecida(unittest.TestCase):
         """Matriz sem estrutura: toda linha com o mesmo perfil de coluna. A
         primeira dimensão não trivial não tem o que separar."""
         matriz = {(i, j): 1.0 for i in range(1, 9) for j in (101, 102, 103)}
-        _, diag = positions._dimensao_1(matriz)
+        _, _, diag = positions._dimensao_1(matriz)
         self.assertLess(diag["inercia"], 1e-6,
                         f"inventou estrutura onde não há: {diag['inercia']}")
 
@@ -224,7 +227,7 @@ class TestConvergencia(unittest.TestCase):
         return m
 
     def test_caso_facil_converge_e_diz_que_convergiu(self):
-        _, diag = positions._dimensao_1(self._matriz_facil())
+        _, _, diag = positions._dimensao_1(self._matriz_facil())
         self.assertTrue(diag["convergiu"])
         self.assertLess(diag["iteracoes"], positions.MAX_ITER)
         self.assertLess(diag["residuo"], positions.TOL)
@@ -233,7 +236,7 @@ class TestConvergencia(unittest.TestCase):
         original = positions.MAX_ITER
         positions.MAX_ITER = 2
         try:
-            _, diag = positions._dimensao_1(self._matriz_facil())
+            _, _, diag = positions._dimensao_1(self._matriz_facil())
         finally:
             positions.MAX_ITER = original
         self.assertFalse(diag["convergiu"], "bateu no teto e disse que convergiu")
@@ -242,7 +245,7 @@ class TestConvergencia(unittest.TestCase):
     def test_fatia_da_inercia_e_uma_fracao_da_inercia_total(self):
         """σ₁² sozinho não diz se a dimensão 1 explica muito ou pouco. A fatia
         precisa do denominador, que é χ²/N."""
-        _, diag = positions._dimensao_1(self._matriz_facil())
+        _, _, diag = positions._dimensao_1(self._matriz_facil())
         self.assertGreater(diag["inercia_total"], 0.0)
         self.assertLessEqual(diag["inercia"], diag["inercia_total"] + 1e-9)
         self.assertAlmostEqual(diag["fatia_inercia"],
@@ -263,7 +266,7 @@ class TestConvergencia(unittest.TestCase):
                 p = m.get((i, j), 0.0) / total
                 esperado = r[i] * c[j]
                 direto += (p - esperado) ** 2 / esperado
-        _, diag = positions._dimensao_1(m)
+        _, _, diag = positions._dimensao_1(m)
         self.assertAlmostEqual(diag["inercia_total"], direto, places=9)
 
 
@@ -275,10 +278,8 @@ class TestFormaDoDiagnostico(unittest.TestCase):
     — que foi exatamente o que aconteceu ao acrescentar o aviso.
     """
 
-    ESPERADAS = set(positions.DIAG_VAZIO) | {
-        "scope", "atores", "alvos", "descartados", "decis", "fatia_no_meio",
-        "com_comunidade", "atores_na_particao", "concordancia",
-        "n_comparados", "maiores"}
+    ESPERADAS = (set(positions.DIAG_VAZIO) | set(positions.VAZIO_EXTRA)
+                 | {"scope", "atores", "alvos", "descartados"})
 
     def _chaves(self, conn, window, scope):
         return set(positions.compute_positions(conn, window, scope, persist=False))
@@ -353,3 +354,64 @@ class TestRedundanciaComAParticao(EixoTestCase):
         d = positions.compute_positions(self.conn, self.window, self.scope)
         self.assertLessEqual(d["com_comunidade"], d["atores"])
         self.assertGreater(d["atores_na_particao"], 0)
+
+
+class TestQuemRecebePosicao(EixoTestCase):
+    """Numa rede de amplificação, quem tem PageRank alto é o AMPLIFICADO.
+
+    A primeira versão devolvia só coordenadas de linha — de quem amplifica — e
+    a tabela de atores do dossiê saiu com a posição vazia em 11 dos 12 perfis.
+    O eixo existia, convergia, tinha σ₁ = 0,99, e cobria a população errada.
+    """
+
+    def test_os_amplificados_tambem_recebem_posicao(self):
+        d = positions.compute_positions(self.conn, self.window, self.scope)
+        self.assertGreater(d["amplificados"], 0, "nenhum alvo recebeu posição")
+        self.assertGreater(d["amplificadores"], 0)
+
+    def test_os_mais_centrais_tem_posicao(self):
+        """O teste que a versão quebrada teria reprovado: os atores que o
+        relatório mostra são os de maior PageRank, e eles precisam de posição."""
+        positions.compute_positions(self.conn, self.window, self.scope)
+        escores = positions.positions_of(self.conn, self.window, self.scope)
+        topo = [r["actor_id"] for r in self.conn.execute(
+            "SELECT actor_id FROM actor_metric WHERE window_start=? AND scope=? "
+            "AND metric='pagerank' ORDER BY value DESC LIMIT 12",
+            (self.window, self.scope))]
+        self.assertTrue(topo)
+        com_posicao = [a for a in topo if a in escores]
+        self.assertGreaterEqual(
+            len(com_posicao), len(topo) * 0.7,
+            f"só {len(com_posicao)} de {len(topo)} dos mais centrais têm posição")
+
+    def test_o_papel_fica_gravado_no_metodo(self):
+        """Linha e coluna são estimativas de qualidade diferente: a coluna vem
+        de muitos amplificadores, a linha de poucos alvos. Quem lê precisa
+        saber qual das duas está vendo."""
+        positions.compute_positions(self.conn, self.window, self.scope)
+        metodos = {r["method"] for r in self.conn.execute(
+            "SELECT DISTINCT method FROM actor_position WHERE window_start=? AND scope=?",
+            (self.window, self.scope))}
+        self.assertTrue(metodos)
+        for m in metodos:
+            self.assertTrue(m.startswith(positions.METHOD + "/"), m)
+        self.assertIn(positions.METHOD + "/amplificado", metodos)
+
+    def test_linha_e_coluna_ficam_na_mesma_escala(self):
+        """Numa AC as duas coordenadas principais têm a mesma variância ao
+        longo da dimensão. Se não tivessem, misturá-las num eixo só seria
+        sobrepor dois gráficos de escalas diferentes e chamar de biplot."""
+        matriz = {}
+        for i in range(1, 9):
+            matriz[(i, 101)] = 3.0
+            matriz[(i, 102)] = 2.0
+        for i in range(9, 17):
+            matriz[(i, 201)] = 3.0
+            matriz[(i, 202)] = 2.0
+        linha, coluna, diag = positions._dimensao_1(matriz)
+        def var(d):
+            vals = list(d.values())
+            m = sum(vals) / len(vals)
+            return sum((x - m) ** 2 for x in vals) / len(vals)
+        self.assertAlmostEqual(var(linha), var(coluna), places=6)
+        self.assertAlmostEqual(var(linha), diag["inercia"], places=6)

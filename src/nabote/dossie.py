@@ -44,6 +44,9 @@ COAMP_MIN_PARES = 3
 # Sub-pautas
 NGRAM_MAX = 3
 NGRAM_MIN_POSTS = 20
+# Em quantos TEXTOS DIFERENTES o termo precisa aparecer. Sem isto, um post que
+# viralizou basta para criar um "enquadramento".
+NGRAM_MIN_TEXTOS = 5
 NGRAM_MIN_LIFT = 1.5
 SUBPAUTAS_POR_COMUNIDADE = 3
 CONCENTRACAO_TOP = 3
@@ -112,14 +115,29 @@ def window_summary(conn: sqlite3.Connection, window_start: str, scope: str,
 # 2. MAPA — subgrafo dos mais centrais, com layout determinístico
 # =============================================================================
 
+# Mínimo de audiência em comum para ligar dois perfis no mapa.
+PROJECAO_MIN = 2
+
+
 def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
                 limit: int = MAPA_TOP, view: str = "amp",
-                graph_version: int = GRAPH_VERSION) -> dict[str, Any]:
+                graph_version: int = GRAPH_VERSION,
+                projecao_min: int = PROJECAO_MIN) -> dict[str, Any]:
     """Subgrafo dos `limit` atores de maior PageRank, posicionado para desenho.
 
-    Devolve nós com x/y normalizados em [0,1], arestas entre eles, e — isto
-    importa — quanto do grafo ficou de fora. Uma figura com 60 de 34 mil nós é
-    honesta desde que diga que é 60 de 34 mil.
+    A ARESTA AQUI NÃO É "A AMPLIFICOU B" — é "A e B têm audiência em comum",
+    e a troca não é estética. Numa rede de amplificação quem tem PageRank alto
+    é o amplificado, e amplificado não retuíta amplificado: no dado real, entre
+    os 60 perfis mais centrais da pauta, o peso que atravessa comunidade somava
+    4 de 169.234. Desenhar as arestas diretas produz um campo de estrelas sem
+    linha nenhuma — uma figura que parece uma rede e não mostra rede alguma.
+
+    A projeção por audiência compartilhada mostra o que a pergunta pede: dois
+    perfis ficam ligados quando as mesmas pessoas amplificam os dois, que é
+    exatamente o que torna um deles ponte entre comunidades.
+
+    `arestas_diretas` volta junto porque o contraste entre os dois números é,
+    ele próprio, um achado a registrar no relatório.
     """
     import igraph
 
@@ -128,7 +146,8 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
         "AND metric = 'pagerank' AND graph_version = ? ORDER BY value DESC LIMIT ?",
         (window_start, scope, graph_version, limit)).fetchall()
     if not topo:
-        return {"nos": [], "arestas": [], "de": 0, "cobertura_peso": 0.0}
+        return {"nos": [], "arestas": [], "de": 0, "cobertura_peso": 0.0,
+                "arestas_diretas": 0, "peso_direto": 0.0, "ligacao": "audiencia"}
     ids = [r["actor_id"] for r in topo]
     pagerank = {r["actor_id"]: r["value"] for r in topo}
     indice = {a: i for i, a in enumerate(ids)}
@@ -136,8 +155,10 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
     pesos = VIEWS[view]
     marcas_k = ",".join("?" * len(pesos))
     marcas_a = ",".join("?" * len(ids))
-    arestas: dict[tuple[int, int], float] = {}
+    diretas: dict[tuple[int, int], float] = {}
     total_peso = 0.0
+    # audiência de cada perfil selecionado, para a projeção
+    audiencia: dict[int, set[int]] = {a: set() for a in ids}
     for r in conn.execute(
         f"SELECT src_actor_id s, dst_actor_id d, kind, weight FROM edge_window "
         f"WHERE window_start = ? AND scope = ? AND kind IN ({marcas_k})",
@@ -145,19 +166,31 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
     ):
         w = r["weight"] * pesos[r["kind"]]
         total_peso += w
+        if r["d"] in audiencia:
+            audiencia[r["d"]].add(r["s"])
         if r["s"] in indice and r["d"] in indice:
             chave = (indice[r["s"]], indice[r["d"]])
-            arestas[chave] = arestas.get(chave, 0.0) + w
+            diretas[chave] = diretas.get(chave, 0.0) + w
 
-    g = igraph.Graph(directed=True)
+    comum: dict[tuple[int, int], int] = {}
+    for x in range(len(ids)):
+        ax = audiencia[ids[x]]
+        if not ax:
+            continue
+        for y in range(x + 1, len(ids)):
+            n = len(ax & audiencia[ids[y]])
+            if n >= projecao_min:
+                comum[(x, y)] = n
+
+    g = igraph.Graph(directed=False)
     g.add_vertices(len(ids))
-    if arestas:
-        g.add_edges(list(arestas))
-        g.es["weight"] = list(arestas.values())
+    if comum:
+        g.add_edges(list(comum))
+        g.es["weight"] = [float(v) for v in comum.values()]
     # Fruchterman-Reingold é estocástico: sem semente a mesma janela sai com o
     # mapa embaralhado a cada execução e ninguém consegue comparar duas.
     with _rng(LEIDEN_SEED):
-        pos = g.layout_fruchterman_reingold(weights="weight" if arestas else None)
+        pos = g.layout_fruchterman_reingold(weights="weight" if comum else None)
     xs = [p[0] for p in pos] or [0.0]
     ys = [p[1] for p in pos] or [0.0]
     dx = (max(xs) - min(xs)) or 1.0
@@ -178,17 +211,22 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
         "actor_id": a, "handle": (meta[a]["handle"] if a in meta else None),
         "tier": (meta[a]["tier"] if a in meta else "C"),
         "comunidade": com.get(a), "pagerank": pagerank[a], "ei": ei.get(a),
+        "audiencia": len(audiencia[a]),
         "x": (pos[i][0] - min(xs)) / dx, "y": (pos[i][1] - min(ys)) / dy,
     } for i, a in enumerate(ids)]
 
     return {
         "nos": nos,
-        "arestas": [{"de": s, "para": d, "peso": w} for (s, d), w in arestas.items()],
+        "arestas": [{"de": x, "para": y, "peso": float(n)}
+                    for (x, y), n in sorted(comum.items())],
+        "ligacao": "audiencia",
+        "arestas_diretas": len(diretas),
+        "peso_direto": sum(diretas.values()),
         "de": conn.execute(
             "SELECT COUNT(*) AS n FROM actor_community WHERE window_start = ? AND "
             "scope = ? AND graph_version = ?", (window_start, scope, graph_version)
         ).fetchone()["n"],
-        "cobertura_peso": (sum(arestas.values()) / total_peso) if total_peso else 0.0,
+        "cobertura_peso": (sum(diretas.values()) / total_peso) if total_peso else 0.0,
     }
 
 
@@ -208,6 +246,7 @@ def bridges(mapa: dict[str, Any], top: int = 3) -> list[dict[str, Any]]:
     ids = list(nos)
     indice = {a: i for i, a in enumerate(ids)}
 
+    # "peso" aqui é audiência em comum, não volume amplificado — ver network_map
     externo: dict[int, float] = {a: 0.0 for a in ids}
     total: dict[int, float] = {a: 0.0 for a in ids}
     g = igraph.Graph()
@@ -340,6 +379,13 @@ uns vai você vocês eles elas nossa nosso pra pro aqui ali lá agora hoje ontem
 ainda até assim cada depois desde essas esses estas estes outra outro outras outros
 pois quer tao tão toda todas todo todos vez vezes ver vai vao vão fazer faz feito
 ter tem ter sao ha rt https http co t www com br
+veja assista olha vejam confira acompanhe leia saiba clique link fio thread
+contra sobre apos antes durante onde quem qual quais porque pois logo entao
+situacao caso coisa coisas parte partes forma jeito modo tipo tipos lugar
+dia dias mes meses ano anos hora horas tempo momento vez momento gente pessoas
+pessoa povo brasil brasileiro brasileira brasileiros brasileiras pais nacional
+governo presidente ministro ministra ministerio federal publico publica
+grande grandes pequeno pequena novo nova velho bom boa mal melhor pior
 """.split())
 
 
@@ -378,41 +424,56 @@ def _passar(conn: sqlite3.Connection, window_start: str, label: str | None):
 
 
 def _frequentes(docs, comunidade, n: int, anteriores: set[str] | None,
-                min_posts: int):
-    """Frequência documental dos n-gramas, global e por comunidade.
+                min_posts: int, min_textos: int):
+    """Frequência dos n-gramas: por post (para o share) e por TEXTO DISTINTO.
 
     Só monta n-gramas cujos dois pedaços de tamanho n-1 já passaram no corte.
     Sem essa poda, trigramas de um corpus de 143 mil posts geram milhões de
     chaves distintas e o processo morre por memória antes de responder nada —
     é a mesma ideia do Apriori, e é o que torna esta seção viável sem numpy.
+
+    A contagem por texto distinto existe por causa de um problema que só
+    aparece em corpus de retuíte: um post que viraliza 87 vezes entra como 87
+    documentos IDÊNTICOS, e cada n-grama daquele texto herda frequência 87. Na
+    primeira versão isso produziu, numa comunidade, três "enquadramentos"
+    com posts=87 e lift=89,4 iguais — eram três fragmentos da MESMA frase.
+    A seleção passa a exigir que o termo apareça em vários textos diferentes;
+    o share continua sendo volume, que é o que o relatório pede.
     """
     doc_freq: Counter = Counter()
+    textos_freq: Counter = Counter()
     por_com: dict[int, Counter] = {}
+    vistos_por_texto: dict[str, set[str]] = {}
     for actor_id, texto in docs:
-        palavras = texto.split()
-        if len(palavras) < n:
-            continue
-        vistos = set()
-        for i in range(len(palavras) - n + 1):
-            if anteriores is not None:
-                if " ".join(palavras[i:i + n - 1]) not in anteriores:
-                    continue
-                if " ".join(palavras[i + 1:i + n]) not in anteriores:
-                    continue
-            vistos.add(" ".join(palavras[i:i + n]))
+        if texto in vistos_por_texto:
+            vistos = vistos_por_texto[texto]
+        else:
+            palavras = texto.split()
+            vistos = set()
+            for i in range(len(palavras) - n + 1):
+                if anteriores is not None:
+                    if " ".join(palavras[i:i + n - 1]) not in anteriores:
+                        continue
+                    if " ".join(palavras[i + 1:i + n]) not in anteriores:
+                        continue
+                vistos.add(" ".join(palavras[i:i + n]))
+            vistos_por_texto[texto] = vistos
+            textos_freq.update(vistos)
         if not vistos:
             continue
         doc_freq.update(vistos)
         cid = comunidade.get(actor_id)
         if cid is not None:
             por_com.setdefault(cid, Counter()).update(vistos)
-    sobrevivem = {g for g, c in doc_freq.items() if c >= min_posts}
-    return doc_freq, por_com, sobrevivem
+    sobrevivem = {g for g in doc_freq
+                  if doc_freq[g] >= min_posts and textos_freq[g] >= min_textos}
+    return doc_freq, por_com, sobrevivem, textos_freq
 
 
 def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
               por_comunidade: int = SUBPAUTAS_POR_COMUNIDADE,
               min_posts: int = NGRAM_MIN_POSTS, min_lift: float = NGRAM_MIN_LIFT,
+              min_textos: int = NGRAM_MIN_TEXTOS,
               graph_version: int = GRAPH_VERSION) -> dict[str, Any]:
     """Enquadramentos distintivos de cada comunidade, dentro da pauta.
 
@@ -443,6 +504,7 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
                 for a, t in docs]
 
     freq: dict[str, int] = {}
+    textos: dict[str, int] = {}
     contagem: dict[int, Counter] = {}
     posts_com: Counter = Counter()
     for actor_id, _ in docs:
@@ -452,11 +514,12 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
 
     sobrevivem: set[str] | None = None
     for n in range(1, NGRAM_MAX + 1):
-        doc_freq, por_com, sobrevivem_n = _frequentes(
-            docs, comunidade, n, sobrevivem, min_posts)
+        doc_freq, por_com, sobrevivem_n, textos_n = _frequentes(
+            docs, comunidade, n, sobrevivem, min_posts, min_textos)
         if not sobrevivem_n:
             break
         freq.update({g: doc_freq[g] for g in sobrevivem_n})
+        textos.update({g: textos_n[g] for g in sobrevivem_n})
         for cid, c in por_com.items():
             alvo = contagem.setdefault(cid, Counter())
             for g in sobrevivem_n:
@@ -480,9 +543,13 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
         candidatos.sort(key=lambda x: (-x[0] * x[1], x[2]))
         ficam: list[tuple] = []
         for cand in candidatos:
-            # "povos" e "povos indigenas" descrevem o mesmo enquadramento;
-            # o mais forte já ganhou, o pedaço dele é ruído na tabela
-            if any(cand[2] in j[2] or j[2] in cand[2] for j in ficam):
+            # Rejeita por PALAVRA em comum, não por substring. "estamos falando
+            # genocidio" e "falando genocidio marreco" são janelas deslizantes
+            # da mesma frase e nenhuma é substring da outra: a regra antiga
+            # deixava as duas passarem e a tabela saía com três linhas
+            # descrevendo um enquadramento só.
+            palavras = set(cand[2].split())
+            if any(palavras & set(j[2].split()) for j in ficam):
                 continue
             ficam.append(cand)
             if len(ficam) >= por_comunidade:
@@ -512,6 +579,7 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
             topo = autores[(cid, termo)].most_common(CONCENTRACAO_TOP)
             linhas.append({
                 "comunidade": cid, "termo": termo, "posts": n,
+                "textos": textos.get(termo, 0),
                 "share": share, "lift": lift,
                 "concentracao": sum(c for _, c in topo) / n if n else 0.0,
                 "top_autores": [a for a, _ in topo],
@@ -519,7 +587,9 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
     linhas.sort(key=lambda r: (r["comunidade"], -r["lift"]))
     return {
         "linhas": linhas, "posts": total_posts, "posts_com_texto": com_texto,
-        "metodo": f"ngram-v1(n<={NGRAM_MAX},min={min_posts},lift>={min_lift})",
+        "textos_distintos": len({t for _, t in docs}),
+        "metodo": (f"ngram-v2(n<={NGRAM_MAX},posts>={min_posts},"
+                   f"textos>={min_textos},lift>={min_lift})"),
     }
 
 

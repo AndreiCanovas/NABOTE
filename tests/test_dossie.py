@@ -33,10 +33,23 @@ class Fonte:
         yield from self._eventos
 
 
-TEXTOS = {
-    0: "fome e desnutricao na terra indigena garimpo ilegal",
-    1: "governo federal anuncia forca tarefa de saude indigena",
+# Vocabulário próprio de cada comunidade, combinado em frases DIFERENTES.
+# O fixture antigo repetia um texto só por comunidade — que é exatamente a
+# patologia do retuíte que `min_textos` existe para barrar, e com ela o teste
+# media a capacidade de contar um texto repetido, não de achar enquadramento.
+VOCAB = {
+    0: "desnutricao garimpo ilegal invasao terra demarcacao mineracao".split(),
+    1: "voluntarios solidariedade doacao mutirao logistica atendimento".split(),
 }
+NEUTRO = "roraima norte regiao area local semana relato registro imagem".split()
+
+
+def _texto(com, i):
+    v = VOCAB[com]
+    n = NEUTRO
+    return " ".join([v[i % len(v)], n[i % len(n)], v[(i + 2) % len(v)],
+                     n[(i + 3) % len(n)], v[(i + 4) % len(v)],
+                     n[(i + 5) % len(n)], v[(i + 1) % len(v)]])
 
 
 def _post(uid, alvo, pid, quando, texto=None, tipo="repost"):
@@ -71,7 +84,7 @@ class DossieTestCase(unittest.TestCase):
                     f"did:plc:sint{com:02d}000",
                     f"p{com}-{i}",
                     (inicio + timedelta(minutes=7 * i + com)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    texto=f"{self.PAUTA} {TEXTOS[com]}"))
+                    texto=f"{self.PAUTA} {_texto(com, i)}"))
         ingest.ingest(self.conn, Fonte("x:pauta", rotulados), kind="campanha",
                       campaign_label=self.PAUTA, author_tier="C", resume=False)
 
@@ -261,7 +274,8 @@ class TestCoamplificacao(DossieTestCase):
 
 class TestSubPautas(DossieTestCase):
     def test_separa_o_vocabulario_de_cada_comunidade(self):
-        r = dossie.subtopics(self.conn, self.window, self.scope, min_posts=5)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
         por_com = {}
         for linha in r["linhas"]:
             por_com.setdefault(linha["comunidade"], set()).add(linha["termo"])
@@ -273,19 +287,22 @@ class TestSubPautas(DossieTestCase):
     def test_nao_devolve_o_proprio_termo_da_coleta(self):
         """Yanomami está em 100% dos posts por construção da coleta. Se ele
         aparecer como 'enquadramento distintivo', a seção inteira é tautologia."""
-        r = dossie.subtopics(self.conn, self.window, self.scope, min_posts=5)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
         for linha in r["linhas"]:
             self.assertNotIn("yanomami", linha["termo"])
 
     def test_lift_acima_de_um_significa_desproporcional(self):
-        r = dossie.subtopics(self.conn, self.window, self.scope, min_posts=5)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
         self.assertTrue(r["linhas"])
         for linha in r["linhas"]:
             self.assertGreaterEqual(linha["lift"], dossie.NGRAM_MIN_LIFT)
             self.assertLessEqual(linha["share"], 1.0)
 
     def test_nao_repete_pedaco_de_termo_maior(self):
-        r = dossie.subtopics(self.conn, self.window, self.scope, min_posts=5)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
         por_com = {}
         for linha in r["linhas"]:
             por_com.setdefault(linha["comunidade"], []).append(linha["termo"])
@@ -297,7 +314,8 @@ class TestSubPautas(DossieTestCase):
 
     def test_corpus_sem_texto_devolve_vazio_em_vez_de_quebrar(self):
         self.conn.execute("UPDATE post SET text = NULL")
-        r = dossie.subtopics(self.conn, self.window, self.scope, min_posts=1)
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=1, min_textos=1)
         self.assertEqual(r["linhas"], [])
         self.assertEqual(r["posts_com_texto"], 0)
         self.assertGreater(r["posts"], 0, "precisa dizer quantos posts examinou")
@@ -449,3 +467,88 @@ class TestMensagemDeErro(DossieTestCase):
     def test_sugere_aggregate_quando_nao_ha_arestas(self):
         texto = self._erro_de("NaoExiste")
         self.assertIn("aggregate", texto)
+
+
+class TestContaminacaoPorViral(DossieTestCase):
+    """Os dois defeitos que o dado real expôs na primeira versão das sub-pautas.
+
+    Na janela 2023-01-23 saíram, numa comunidade, três "enquadramentos" com
+    posts=87, lift=89,4 e concentração idênticos — eram três fragmentos da mesma
+    frase de UM post retuitado 87 vezes. E noutra, três trigramas deslizantes da
+    mesma sentença ("estamos falando genocidio" / "falando genocidio marreco" /
+    "genocidio marreco inferno"), que a regra de substring deixava passar porque
+    nenhum é substring do outro.
+    """
+
+    def _variado(self, com, n, marca):
+        """Posts de texto distinto na OUTRA comunidade, para baixar a taxa
+        global do termo viral. Sem isso o termo é filtrado pelo lift e o caso
+        de contaminação nem chega a se reproduzir."""
+        inicio = datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+        eventos = [_post(f"did:plc:sint{com:02d}{(i % 15) + 1:03d}",
+                         f"did:plc:sint{com:02d}000", f"{marca}v{i}",
+                         (inicio + timedelta(minutes=2 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         texto=f"{self.PAUTA} {_texto(com, i)} item {i}")
+                   for i in range(n)]
+        ingest.ingest(self.conn, Fonte(marca + "v", eventos), kind="campanha",
+                      campaign_label=self.PAUTA, author_tier="C", resume=False)
+
+    def _viral(self, com, texto, n, marca):
+        inicio = datetime(2026, 9, 16, 9, 0, 0, tzinfo=timezone.utc)
+        eventos = [_post(f"did:plc:sint{com:02d}{(i % 15) + 1:03d}",
+                         f"did:plc:sint{com:02d}000", f"{marca}{i}",
+                         (inicio + timedelta(minutes=3 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         texto=texto)
+                   for i in range(n)]
+        ingest.ingest(self.conn, Fonte(marca, eventos), kind="campanha",
+                      campaign_label=self.PAUTA, author_tier="C", resume=False)
+
+    def test_um_post_viral_nao_vira_enquadramento(self):
+        """87 cópias do mesmo texto são um post amplificado, não 87 evidências
+        de que a comunidade usa aquele enquadramento."""
+        frase = (f"{self.PAUTA} estamos falando de um escandalo absurdo "
+                 f"inaceitavel escandaloso vergonhoso")
+        self._variado(1, 200, "base1")
+        self._viral(0, frase, 60, "viral")
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=5)
+        for linha in r["linhas"]:
+            self.assertNotIn("escandalo", linha["termo"],
+                             f"o texto viral virou enquadramento: {linha}")
+
+    def test_com_o_limite_de_textos_desligado_a_contaminacao_reaparece(self):
+        """Prova que é o limite agindo, e não o dado estar ausente: sem ele, o
+        mesmo corpus devolve o termo do post viral."""
+        frase = (f"{self.PAUTA} estamos falando de um escandalo absurdo "
+                 f"inaceitavel escandaloso vergonhoso")
+        self._variado(1, 200, "base2")
+        self._viral(0, frase, 60, "viral2")
+        solto = dossie.subtopics(self.conn, self.window, self.scope,
+                                 min_posts=5, min_textos=1)
+        self.assertTrue(any("escandalo" in l["termo"] for l in solto["linhas"]),
+                        "o caso de contaminação não se reproduz; o teste não prova nada")
+
+    def test_fragmentos_da_mesma_frase_nao_viram_tres_linhas(self):
+        """Regra de rejeição por palavra em comum, não por substring."""
+        for k in range(8):
+            self._viral(1, f"{self.PAUTA} estamos falando genocidio marreco "
+                           f"inferno relato numero {k}", 9, f"frag{k}")
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
+        for cid in {l["comunidade"] for l in r["linhas"]}:
+            termos = [l["termo"] for l in r["linhas"] if l["comunidade"] == cid]
+            palavras = [set(t.split()) for t in termos]
+            for i, a in enumerate(palavras):
+                for b in palavras[i + 1:]:
+                    self.assertFalse(a & b, f"termos partilham palavra: {termos}")
+
+    def test_reporta_textos_distintos_ao_lado_dos_posts(self):
+        """A diferença entre os dois números é o que diz se a pauta é muita
+        gente dizendo coisas parecidas ou um post amplificado."""
+        r = dossie.subtopics(self.conn, self.window, self.scope,
+                             min_posts=5, min_textos=3)
+        self.assertGreater(r["textos_distintos"], 0)
+        self.assertLessEqual(r["textos_distintos"], r["posts_com_texto"])
+        for linha in r["linhas"]:
+            self.assertIn("textos", linha)
+            self.assertLessEqual(linha["textos"], linha["posts"])

@@ -44,6 +44,9 @@ AXIS = "amp"
 DIAG_VAZIO = {"convergiu": False, "sigma1": 0.0, "inercia": 0.0,
               "inercia_total": 0.0, "fatia_inercia": 0.0,
               "iteracoes": 0, "residuo": None}
+VAZIO_EXTRA = {"decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
+               "atores_na_particao": 0, "amplificadores": 0, "amplificados": 0,
+               "concordancia": None, "n_comparados": 0, "maiores": []}
 
 # Abaixo disto o ator não escolheu: amplificou uma conta só.
 MIN_ALVOS = 2
@@ -97,10 +100,12 @@ def _podar(matriz: dict[tuple[int, int], float]) -> dict[tuple[int, int], float]
 
 
 def _dimensao_1(matriz: dict[tuple[int, int], float],
-                seed: int = LEIDEN_SEED) -> tuple[dict[int, float], dict[str, Any]]:
+                seed: int = LEIDEN_SEED
+                ) -> tuple[dict[int, float], dict[int, float], dict[str, Any]]:
     """Primeira dimensão não trivial da análise de correspondência.
 
-    Devolve (escore por linha, diagnóstico). O diagnóstico traz `convergiu`
+    Devolve (escores de quem amplifica, escores de quem é amplificado,
+    diagnóstico). O diagnóstico traz `convergiu`
     porque sem ele não há como distinguir uma solução estável de uma que bateu
     no teto de iterações — e as duas viram o mesmo número no relatório.
 
@@ -118,7 +123,7 @@ def _dimensao_1(matriz: dict[tuple[int, int], float],
     nl, nc = len(linhas), len(colunas)
     vazio = dict(DIAG_VAZIO)
     if nl < 2 or nc < 2:
-        return {}, vazio
+        return {}, {}, vazio
 
     total = sum(matriz.values())
     r = [0.0] * nl
@@ -178,7 +183,7 @@ def _dimensao_1(matriz: dict[tuple[int, int], float],
         deflacionar(prox)
         sigma2 = math.sqrt(sum(x * x for x in prox))
         if sigma2 <= 0:
-            return {}, {**vazio, "iteracoes": gastas}
+            return {}, {}, {**vazio, "iteracoes": gastas}
         prox = [x / sigma2 for x in prox]
         residuo = max(abs(prox[k] - v[k]) for k in range(nc))
         v = prox
@@ -193,11 +198,23 @@ def _dimensao_1(matriz: dict[tuple[int, int], float],
     u = a_vec(v)
     norma_u = math.sqrt(sum(x * x for x in u))
     if norma_u <= 0:
-        return {}, {**vazio, "iteracoes": gastas}
+        return {}, {}, {**vazio, "iteracoes": gastas}
     sigma = math.sqrt(sigma2)
-    # coordenada principal da linha: σ · u_i / √r_i
-    escores = {linhas[k]: sigma * (u[k] / norma_u) / math.sqrt(r[k]) for k in range(nl)}
-    return escores, diag
+    # Coordenadas principais: σ·u_i/√r_i para a linha, σ·v_j/√c_j para a coluna.
+    #
+    # As DUAS importam, e esquecer a segunda é um erro caro: numa rede de
+    # amplificação quem tem PageRank alto é o AMPLIFICADO, isto é, uma coluna.
+    # A primeira versão devolvia só linhas e a tabela de atores do dossiê saiu
+    # com a posição vazia em 11 dos 12 perfis — o eixo existia e cobria a
+    # população errada.
+    #
+    # Numa análise de correspondência as duas coordenadas vivem no mesmo espaço
+    # e têm a mesma variância ao longo da dimensão (σ₁²), então são diretamente
+    # comparáveis: é o que torna o gráfico de posicionamento um biplot e não
+    # dois gráficos sobrepostos por conveniência.
+    por_linha = {linhas[k]: sigma * (u[k] / norma_u) / math.sqrt(r[k]) for k in range(nl)}
+    por_coluna = {colunas[k]: sigma * v[k] / math.sqrt(c[k]) for k in range(nc)}
+    return por_linha, por_coluna, diag
 
 
 def _orientar(escores: dict[int, float], comunidade: dict[int, int]) -> dict[int, float]:
@@ -275,9 +292,7 @@ def compute_positions(
     if not matriz:
         return {"scope": scope, "atores": 0, "alvos": 0,
                 "descartados": len({i for i, _ in bruto}),
-                "decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
-                "atores_na_particao": 0, "concordancia": None,
-                "n_comparados": 0, "maiores": [], **DIAG_VAZIO}
+                **VAZIO_EXTRA, **DIAG_VAZIO}
 
     comunidade = {
         r["actor_id"]: r["community_id"] for r in conn.execute(
@@ -285,13 +300,16 @@ def compute_positions(
             "WHERE window_start = ? AND scope = ? AND graph_version = ?",
             (window_start, scope, graph_version))
     }
-    escores, diag = _dimensao_1(matriz)
+    por_linha, por_coluna, diag = _dimensao_1(matriz)
+    # Quem é amplificado tem a posição estimada a partir de MUITOS
+    # amplificadores; quem amplifica, a partir de poucos alvos. Quando o mesmo
+    # ator aparece nos dois papéis, a estimativa de coluna é a melhor das duas.
+    escores = {**por_linha, **por_coluna}
+    papel = {a: ("amplificado" if a in por_coluna else "amplifica") for a in escores}
     if not escores:
         return {"scope": scope, "atores": 0, "alvos": 0,
                 "descartados": len({i for i, _ in bruto}),
-                "decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
-                "atores_na_particao": len(comunidade), "concordancia": None,
-                "n_comparados": 0, "maiores": [], **diag}
+                **VAZIO_EXTRA, "atores_na_particao": len(comunidade), **diag}
 
     escores = _normalizar(_orientar(escores, comunidade))
     extremos = sorted(escores, key=lambda a: escores[a])
@@ -305,7 +323,8 @@ def compute_positions(
         conn.executemany(
             "INSERT INTO actor_position (actor_id, axis, window_start, scope, score, "
             "method, is_anchor, computed_at) VALUES (?,?,?,?,?,?,?,?)",
-            [(a, AXIS, window_start, scope, s, METHOD, 1 if a in ancoras else 0, agora)
+            [(a, AXIS, window_start, scope, s,
+              f"{METHOD}/{papel[a]}", 1 if a in ancoras else 0, agora)
              for a, s in escores.items()])
 
     # Distribuição: um eixo com σ₁ perto de 1 tende a virar indicador binário
@@ -328,6 +347,7 @@ def compute_positions(
         # antes que alguém leia "eixo médio da comunidade" como cobrindo todos.
         "com_comunidade": with_com,
         "atores_na_particao": len(comunidade),
+        "amplificadores": len(por_linha), "amplificados": len(por_coluna),
         **_concordancia(escores, comunidade),
         **diag,
     }
