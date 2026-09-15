@@ -1,0 +1,11 @@
+-- Índice para ORDER BY weight DESC dentro de uma janela.
+--
+-- Sem ele, listar as arestas mais pesadas exigia ordenar a janela inteira num
+-- B-tree temporário — 724 mil linhas no dado real. Com ele, o SQLite caminha o
+-- índice já em ordem e para no LIMIT.
+--
+-- Isso importa mais do que parece: é o índice que torna possível filtrar as
+-- arestas do núcleo em Python, lendo em ordem de peso e parando cedo, em vez de
+-- entregar o filtro ao planejador — que escolheu produto cartesiano de 72 mil
+-- por 72 mil e pendurou o comando.
+CREATE INDEX idx_edgew_weight ON edge_window (window_start, scope, weight DESC);

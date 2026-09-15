@@ -571,27 +571,40 @@ def cmd_dump(args: argparse.Namespace) -> int:
         marcadores = ",".join("?" * len(tipos))
         # Sob `--core`, a lista tem de mostrar arestas DO NÚCLEO. Senão o
         # cabeçalho anuncia um grafo e a lista exibe outro — inclusive atores
-        # que foram podados. Quem está no núcleo é quem tem métrica no escopo.
-        no_nucleo = ("" if not getattr(args, "core", False) else f"""
-              AND e.src_actor_id IN (SELECT actor_id FROM actor_community
-                                     WHERE window_start=? AND scope=?)
-              AND e.dst_actor_id IN (SELECT actor_id FROM actor_community
-                                     WHERE window_start=? AND scope=?)""")
-        extra = (window, scope, window, scope) if no_nucleo else ()
+        # que foram podados.
+        #
+        # O filtro é feito em Python, de propósito. Entregá-lo ao planejador
+        # como duas subconsultas `IN` fez o SQLite escolher produto cartesiano
+        # sobre o índice único: 72 mil origens × 72 mil destinos × 2 tipos, dez
+        # bilhões de sondagens, comando pendurado. Lendo em ordem de peso pelo
+        # índice e parando no teto, o custo é proporcional ao que se mostra.
+        nucleo = None
+        if getattr(args, "core", False):
+            nucleo = {r["actor_id"] for r in conn.execute(
+                "SELECT actor_id FROM actor_community WHERE window_start=? "
+                "AND scope=?", (window, scope))}
+
         print(f"\narestas mais pesadas da visão {scope} "
               f"({' + '.join(tipos)})")
-        for r in conn.execute(f"""
-            SELECT s.handle AS sh, s.platform_user_id AS sd,
+        cursor = conn.execute(f"""
+            SELECT e.src_actor_id AS si, e.dst_actor_id AS di,
+                   s.handle AS sh, s.platform_user_id AS sd,
                    d.handle AS dh, d.platform_user_id AS dd, e.kind, e.weight
             FROM edge_window e
             JOIN actor s ON s.actor_id=e.src_actor_id
             JOIN actor d ON d.actor_id=e.dst_actor_id
             WHERE e.window_start=? AND e.scope=? AND e.kind IN ({marcadores})
-                  {no_nucleo}
-            ORDER BY e.weight DESC LIMIT ?
-        """, (window, args.scope, *tipos, *extra, args.top)).fetchall():
+            ORDER BY e.weight DESC
+        """, (window, args.scope, *tipos))
+        mostradas = 0
+        for r in cursor:
+            if nucleo is not None and (r["si"] not in nucleo or r["di"] not in nucleo):
+                continue
             print(f"  {(r['sh'] or r['sd'])[:26]:<27} -{r['kind']:>8}-> "
                   f"{(r['dh'] or r['dd'])[:26]:<27} {r['weight']:.0f}")
+            mostradas += 1
+            if mostradas >= args.top:
+                break
 
         # …e o que a visão deixou de fora precisa ficar visível, senão filtrar
         # vira esconder.

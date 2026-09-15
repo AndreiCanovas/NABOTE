@@ -115,6 +115,17 @@ class TestNucleoNoDump(DumpTestCase):
             self.assertIn(origem, self.nucleo, f"ator podado na lista: {origem}")
             self.assertIn(destino, self.nucleo, f"ator podado na lista: {destino}")
 
+    def test_lista_para_no_teto(self):
+        """O teto tem de ser respeitado EXATAMENTE, porque é ele que permite
+        parar cedo. Filtrar o núcleo em SQL fazia o planejador escolher produto
+        cartesiano sobre o índice único — 72 mil × 72 mil no dado real — e o
+        comando nunca terminava. Lendo em ordem de peso e parando no teto, o
+        custo é proporcional ao que se mostra, não ao tamanho da janela."""
+        for teto in (1, 3, 7):
+            with self.subTest(teto=teto):
+                arestas = self._arestas(self.dump(core=True, top=teto))
+                self.assertEqual(len(arestas), teto)
+
     def test_a_lista_do_nucleo_e_subconjunto_estrito(self):
         """Com o teto alto o bastante para caber tudo: a lista do núcleo tem de
         ser exatamente a do grafo cheio menos as arestas de atores podados."""

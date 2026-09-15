@@ -358,7 +358,7 @@ não leu a conversa, e número sem ressalva vira slide.
 python3 -m unittest discover -s tests
 ```
 
-185 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+186 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

@@ -118,16 +118,21 @@ def export_edges(conn: sqlite3.Connection, window: str, edge_scope: str,
     if kinds:
         filtros.append(f"e.kind IN ({','.join('?' * len(kinds))})")
         valores += kinds
-    if apenas_de:
-        dentro = ("SELECT actor_id FROM actor_community "
-                  "WHERE window_start=? AND scope=? AND graph_version=?")
-        filtros.append(f"e.src_actor_id IN ({dentro})")
-        valores += [window, apenas_de, graph_version]
-        filtros.append(f"e.dst_actor_id IN ({dentro})")
-        valores += [window, apenas_de, graph_version]
 
-    linhas = conn.execute(f"""
-        SELECT COALESCE(s.handle, s.platform_user_id) AS src,
+    # O recorte de escopo é aplicado em Python, não como subconsulta `IN`. Com
+    # duas delas o planejador do SQLite escolheu produto cartesiano sobre o
+    # índice único de `edge_window` — 72 mil × 72 mil no dado real — e o comando
+    # nunca terminou. Um conjunto em memória custa alguns megabytes e é imune à
+    # escolha do planejador.
+    dentro = None
+    if apenas_de:
+        dentro = {r["actor_id"] for r in conn.execute(
+            "SELECT actor_id FROM actor_community WHERE window_start=? "
+            "AND scope=? AND graph_version=?", (window, apenas_de, graph_version))}
+
+    cursor = conn.execute(f"""
+        SELECT e.src_actor_id AS si, e.dst_actor_id AS di,
+               COALESCE(s.handle, s.platform_user_id) AS src,
                COALESCE(d.handle, d.platform_user_id) AS dst,
                e.kind, e.weight
         FROM edge_window e
@@ -136,7 +141,14 @@ def export_edges(conn: sqlite3.Connection, window: str, edge_scope: str,
         WHERE {' AND '.join(filtros)}
         ORDER BY e.weight DESC
     """, valores)
-    return _escreve(destino / "edges.csv", ["src", "dst", "kind", "weight"], linhas)
+
+    def linhas():
+        for r in cursor:
+            if dentro is not None and (r["si"] not in dentro or r["di"] not in dentro):
+                continue
+            yield [r["src"], r["dst"], r["kind"], r["weight"]]
+
+    return _escreve(destino / "edges.csv", ["src", "dst", "kind", "weight"], linhas())
 
 
 def export_runs(conn: sqlite3.Connection, window: str, destino: Path) -> int:
