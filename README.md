@@ -374,7 +374,7 @@ Quatro coisas existem só aqui:
 
 | | o que é | limite declarado |
 |---|---|---|
-| **mapa** | subgrafo dos N mais centrais, layout determinístico | diz quantos nós ficaram de fora e que fatia do peso ele cobre |
+| **mapa** | subgrafo dos N mais centrais, com esqueleto por filtro de disparidade | diz quantos nós ficaram de fora, quantas ligações foram cortadas e em que nível |
 | **eixo** | análise de correspondência sobre a matriz de amplificação | só para quem amplificou ≥ 2 contas; o sinal é convenção, não achado |
 | **coamplificação** | pares que amplificaram o mesmo alvo em ≤ 60 s | a chave é o ator alvo, não o post; viralidade em massa é excluída e contada |
 | **sub-pautas** | n-gramas que cada comunidade usa desproporcionalmente | `lift` = P(termo\|comunidade) / P(termo); exige `post.text` no banco |
@@ -408,9 +408,52 @@ Leiden**. Acima de 95% ele avisa: o eixo virou a partição repintada e não é 
 medida independente das comunidades. É a diferença entre um achado e o mesmo
 achado vendido duas vezes.
 
+**O mapa precisa de esqueleto.** A projeção por audiência compartilhada é quase
+completa — 1.079 ligações entre 60 perfis, densidade 0,60 — e um layout de força
+sobre isso colapsa tudo em manchas. O filtro de disparidade guarda as ligações
+desproporcionais *de cada nó*, o que preserva o perfil pequeno que um corte por
+peso absoluto apagaria. O nível não é constante: a escada sobe até ninguém ficar
+sem ligação, porque nó solto num layout de força é empurrado para a periferia
+por repulsão pura e a posição dele não significa nada. Medido na densidade real,
+alfa 0,05 deixava 27 dos 60 perfis soltos; 0,10 deixa zero.
+
 As sub-pautas usam poda progressiva (só monta trigrama cujos bigramas passaram
 no corte). Sem ela, um corpus de 143 mil posts gera milhões de n-gramas
 distintos e o processo morre por memória; com ela são 6 s e 152 MB.
+
+### Uma pauta, vários rótulos
+
+```bash
+nabote dossie --topic CPMI --topic '#CPMIdoGolpe' --window 2023-05-22
+```
+
+A coleta por Trending Topic parte a MESMA pauta em etiquetas diferentes. Na base
+real, `CPMI` e `#CPMIdoGolpe` são seis semanas do mesmo assunto; `Xandão` e
+`Alexandre de Moraes`, a mesma pessoa. Analisá-los separados divide o grafo da
+pauta ao meio por acidente de rótulo.
+
+Os rótulos entram no **nome do escopo** (`topic:CPMI+#CPMIdoGolpe`), e não numa
+tabela de apelidos, porque `scope` é gravado em toda linha de métrica e precisa
+continuar dizendo o que contém seis meses depois. Ordenados, para que
+`topic:A+B` e `topic:B+A` não virem dois escopos com o mesmo conteúdo.
+
+`tools/termos.py <zip>` lista quais termos aparecem em quantas semanas, lendo só
+os nomes dos arquivos — é o que decide qual pauta sustenta um dossiê com
+trajetória, antes de gastar carga.
+
+### Nomes de comunidade
+
+```bash
+nabote label --window 2023-05-22 --scope amp:topic:CPMI:core
+nabote label --window 2023-05-22 --scope amp:topic:CPMI:core --set 2="Crime ambiental"
+```
+
+Um relatório que chama os grupos de "#0", "#1" e "#2" não informa nada: para ler
+a tabela de atores é preciso decorar a de comunidades. O dossiê propõe um nome a
+partir dos n-gramas que a comunidade usa desproporcionalmente e mostra a
+evidência ao lado — termos e perfis de topo. `label --set` troca pelo nome do
+analista; a evidência continua saindo do dado, então o rótulo permanece
+auditável contra o que o justificou.
 
 ### Comparar dois recortes
 

@@ -26,7 +26,7 @@ import random
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from .db import utcnow
 
@@ -123,6 +123,46 @@ def topics_in_window(conn: sqlite3.Connection, window_start: str) -> list[str]:
 
 
 CORE_SUFFIX = ":core"
+# Separador de rótulos dentro de um escopo de pauta.
+#
+# Existe porque a coleta por Trending Topic parte a MESMA pauta em rótulos
+# diferentes: na base real, "CPMI" e "#CPMIdoGolpe" são o mesmo assunto em seis
+# semanas, e "Xandão" e "Alexandre de Moraes" a mesma pessoa. Analisá-los
+# separados divide o grafo da pauta ao meio por um acidente de etiqueta.
+#
+# Os rótulos entram no NOME do escopo, e não numa tabela de apelidos, porque
+# `scope` é gravado em toda linha de métrica e precisa continuar dizendo o que
+# ele contém seis meses depois. Um apelido guardado em tabela deixaria o mesmo
+# nome de escopo significar coisas diferentes conforme a tabela mudasse.
+TOPIC_SEP = "+"
+
+
+def topic_labels(scope: str) -> list[str]:
+    """Rótulos de coleta que compõem um escopo de pauta.
+
+    `topic:CPMI` → ['CPMI'] · `topic:CPMI+#CPMIdoGolpe` → os dois.
+    Devolve [] para escopos que não são de pauta.
+    """
+    if not scope.startswith(TOPIC_PREFIX):
+        return []
+    bruto = scope[len(TOPIC_PREFIX):]
+    if bruto.endswith(CORE_SUFFIX):
+        bruto = bruto[: -len(CORE_SUFFIX)]
+    return [p for p in bruto.split(TOPIC_SEP) if p]
+
+
+def topic_scope(labels: Iterable[str]) -> str:
+    """Rótulos → escopo de arestas, em ordem estável.
+
+    Ordenar é o que impede `topic:A+B` e `topic:B+A` de virarem dois escopos
+    com o mesmo conteúdo e métricas duplicadas.
+    """
+    limpos = sorted({str(x) for x in labels if str(x)})
+    for x in limpos:
+        if TOPIC_SEP in x:
+            raise ValueError(
+                f"rótulo {x!r} contém {TOPIC_SEP!r}, que separa rótulos no escopo")
+    return TOPIC_PREFIX + TOPIC_SEP.join(limpos)
 
 
 def edge_scope_of(scope: str) -> str:
@@ -161,12 +201,14 @@ def aggregate_window(
         (window_start, scope),
     )
 
-    if scope.startswith(TOPIC_PREFIX):
+    rotulos = topic_labels(scope)
+    if rotulos:
+        marcas = ",".join("?" * len(rotulos))
         recorte = ("""
             JOIN post p ON p.post_id = i.post_id
             JOIN collection_run cr ON cr.run_id = p.run_id
-        """, "AND cr.campaign_label = ?")
-        valores = (window_start, scope, window_start, end, scope[len(TOPIC_PREFIX):])
+        """, f"AND cr.campaign_label IN ({marcas})")
+        valores = (window_start, scope, window_start, end, *rotulos)
     else:
         recorte = ("", "")
         valores = (window_start, scope, window_start, end)

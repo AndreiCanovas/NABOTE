@@ -33,7 +33,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .graph import (GRAPH_VERSION, LEIDEN_SEED, VIEWS, TOPIC_PREFIX,
-                    edge_scope_of, _rng)
+                    edge_scope_of, topic_labels, _rng)
+from .graph import topic_scope as _escopo_de_arestas
 from .positions import AXIS
 
 # Nós no mapa. Acima disso a figura vira mancha; abaixo, some a estrutura.
@@ -57,9 +58,16 @@ def _fim(window_start: str) -> str:
     return (datetime.fromisoformat(window_start) + timedelta(days=7)).date().isoformat()
 
 
-def topic_scope(view: str, label: str, core: bool = True) -> str:
-    """Escopo analítico de uma pauta. Um lugar só monta este nome."""
-    return f"{view}:{TOPIC_PREFIX}{label}" + (":core" if core else "")
+def topic_scope(view: str, labels: str | list[str], core: bool = True) -> str:
+    """Escopo analítico de uma pauta. Um lugar só monta este nome.
+
+    Aceita vários rótulos de coleta porque a mesma pauta chega partida em
+    etiquetas diferentes — "CPMI" e "#CPMIdoGolpe" são seis semanas do mesmo
+    assunto, e tratá-las como duas pautas divide o grafo por acidente.
+    """
+    if isinstance(labels, str):
+        labels = [labels]
+    return f"{view}:{_escopo_de_arestas(labels)}" + (":core" if core else "")
 
 
 # =============================================================================
@@ -84,11 +92,8 @@ def window_summary(conn: sqlite3.Connection, window_start: str, scope: str,
         tiers = Counter(r["tier"] for r in conn.execute(
             f"SELECT tier FROM actor WHERE actor_id IN ({marcas})", atores))
 
-    label = arestas[len(TOPIC_PREFIX):] if arestas.startswith(TOPIC_PREFIX) else None
-    if label:
-        onde, valores = "AND cr.campaign_label = ?", (window_start, _fim(window_start), label)
-    else:
-        onde, valores = "", (window_start, _fim(window_start))
+    rotulos = topic_labels(arestas)
+    onde, valores = _filtro_rotulos(rotulos, window_start)
     posts = conn.execute(
         f"SELECT COUNT(*) AS n, COUNT(DISTINCT p.actor_id) AS autores, "
         f"SUM(cr.cost_usd) AS custo, COUNT(DISTINCT p.run_id) AS runs "
@@ -118,12 +123,90 @@ def window_summary(conn: sqlite3.Connection, window_start: str, scope: str,
 
 # Mínimo de audiência em comum para ligar dois perfis no mapa.
 PROJECAO_MIN = 2
+# Escada de níveis do filtro de disparidade, do mais enxuto ao mais frouxo.
+# Não é constante única de propósito — ver `esqueleto_legivel`.
+BACKBONE_ESCADA = (0.01, 0.02, 0.05, 0.10, 0.15, 0.25, 0.40, 0.60, 1.0)
+BACKBONE_ALFA = 0.10
+
+
+def backbone(arestas: dict[tuple[int, int], float],
+             alfa: float = BACKBONE_ALFA) -> dict[tuple[int, int], float]:
+    """Filtro de disparidade: guarda só as ligações fortes PARA CADA NÓ.
+
+    Por que isto existe. A projeção por audiência compartilhada é quase completa
+    — na pauta Yanomami deu 1.079 ligações entre 60 perfis, densidade 0,61. Um
+    layout de força sobre um grafo assim colapsa tudo em duas manchas pretas,
+    porque quase todo par tem alguma atração. O mapa sai ilegível não por falta
+    de dado, mas por excesso indiscriminado dele.
+
+    Cortar por um peso absoluto não resolve: um perfil com 4.700 de audiência
+    tem ligações naturalmente mais pesadas que um com 100, e um corte único
+    apagaria o segundo inteiro. O filtro de disparidade (Serrano, Boguñá e
+    Vespignani, 2009) compara cada ligação com o que se esperaria se o peso do
+    nó se distribuísse ao acaso entre as ligações dele: p = w/força, e a ligação
+    é significativa quando (1 − p)^(grau − 1) < alfa. Cada nó guarda as suas
+    ligações desproporcionais, independente da escala em que vive.
+
+    Uma ligação fica se for significativa de QUALQUER uma das duas pontas — é
+    isso que impede o perfil pequeno de perder a única ligação que o define.
+    Nó de grau 1 mantém a sua por convenção: não há distribuição para comparar.
+    """
+    forca: dict[int, float] = {}
+    grau: dict[int, int] = {}
+    for (a, b), w in arestas.items():
+        for x in (a, b):
+            forca[x] = forca.get(x, 0.0) + w
+            grau[x] = grau.get(x, 0) + 1
+    fica = {}
+    for (a, b), w in arestas.items():
+        for x, y in ((a, b), (b, a)):
+            k = grau[x]
+            if k <= 1:
+                fica[(a, b)] = w
+                break
+            p = w / forca[x] if forca[x] else 0.0
+            if (1.0 - p) ** (k - 1) < alfa:
+                fica[(a, b)] = w
+                break
+    return fica
+
+
+def esqueleto_legivel(arestas: dict[tuple[int, int], float],
+                      escada: tuple[float, ...] = BACKBONE_ESCADA
+                      ) -> tuple[dict[tuple[int, int], float], float]:
+    """Escolhe o filtro mais enxuto que não deixa nenhum perfil solto.
+
+    O nível certo do filtro depende da densidade do grafo, e fixá-lo numa
+    constante quebra na pauta seguinte. Medido sobre um grafo com a densidade
+    real do mapa (60 perfis, 1.059 ligações, densidade 0,60):
+
+        alfa 0,30 → 400 ligações, grau médio 13,3, 0 soltos   (ainda ilegível)
+        alfa 0,10 →  98 ligações, grau médio  3,3, 0 soltos   (legível)
+        alfa 0,05 →  34 ligações, grau médio  1,1, 27 soltos  (metade do mapa flutua)
+        alfa 0,01 →   3 ligações,                  54 soltos  (destruído)
+
+    Nó solto é o pior caso para um layout de força: sem nenhuma aresta, ele é
+    empurrado para a periferia por repulsão pura e a posição dele não significa
+    nada. Por isso o critério não é "quantas ligações sobraram" e sim "ninguém
+    ficou de fora" — sobe na escada até todo mundo ter pelo menos uma ligação, e
+    para no primeiro nível que satisfaz.
+    """
+    if not arestas:
+        return {}, escada[-1]
+    nos = {x for par in arestas for x in par}
+    for alfa in escada:
+        bb = backbone(arestas, alfa)
+        ligados = {x for par in bb for x in par}
+        if len(ligados) == len(nos):
+            return bb, alfa
+    return dict(arestas), escada[-1]
 
 
 def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
                 limit: int = MAPA_TOP, view: str = "amp",
                 graph_version: int = GRAPH_VERSION,
-                projecao_min: int = PROJECAO_MIN) -> dict[str, Any]:
+                projecao_min: int = PROJECAO_MIN,
+                alfa: float | None = None) -> dict[str, Any]:
     """Subgrafo dos `limit` atores de maior PageRank, posicionado para desenho.
 
     A ARESTA AQUI NÃO É "A AMPLIFICOU B" — é "A e B têm audiência em comum",
@@ -148,7 +231,8 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
         (window_start, scope, graph_version, limit)).fetchall()
     if not topo:
         return {"nos": [], "arestas": [], "de": 0, "cobertura_peso": 0.0,
-                "arestas_diretas": 0, "peso_direto": 0.0, "ligacao": "audiencia"}
+                "arestas_diretas": 0, "peso_direto": 0.0, "ligacao": "audiencia",
+                "ligacoes_totais": 0, "alfa": alfa or BACKBONE_ALFA}
     ids = [r["actor_id"] for r in topo]
     pagerank = {r["actor_id"]: r["value"] for r in topo}
     indice = {a: i for i, a in enumerate(ids)}
@@ -183,15 +267,24 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
             if n >= projecao_min:
                 comum[(x, y)] = n
 
+    # O esqueleto é o que vai para o layout E para o desenho. Guardamos o total
+    # antes de filtrar porque a razão entre os dois é o que diz ao leitor quanto
+    # da figura é recorte.
+    total_ligacoes = len(comum)
+    if alfa is None:
+        esqueleto, alfa = esqueleto_legivel(comum)
+    else:
+        esqueleto = backbone(comum, alfa)
+
     g = igraph.Graph(directed=False)
     g.add_vertices(len(ids))
-    if comum:
-        g.add_edges(list(comum))
-        g.es["weight"] = [float(v) for v in comum.values()]
+    if esqueleto:
+        g.add_edges(list(esqueleto))
+        g.es["weight"] = [float(v) for v in esqueleto.values()]
     # Fruchterman-Reingold é estocástico: sem semente a mesma janela sai com o
     # mapa embaralhado a cada execução e ninguém consegue comparar duas.
     with _rng(LEIDEN_SEED):
-        pos = g.layout_fruchterman_reingold(weights="weight" if comum else None)
+        pos = g.layout_fruchterman_reingold(weights="weight" if esqueleto else None)
     xs = [p[0] for p in pos] or [0.0]
     ys = [p[1] for p in pos] or [0.0]
     dx = (max(xs) - min(xs)) or 1.0
@@ -203,6 +296,7 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
         f"SELECT actor_id, community_id FROM actor_community WHERE window_start = ? "
         f"AND scope = ? AND graph_version = ? AND actor_id IN ({marcas_a})",
         (window_start, scope, graph_version, *ids))}
+    nomes = labels_of(conn, window_start, scope, graph_version)
     ei = {r["actor_id"]: r["value"] for r in conn.execute(
         f"SELECT actor_id, value FROM actor_metric WHERE window_start = ? AND scope = ? "
         f"AND metric = 'ei_index' AND graph_version = ? AND actor_id IN ({marcas_a})",
@@ -211,7 +305,8 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
     nos = [{
         "actor_id": a, "handle": (meta[a]["handle"] if a in meta else None),
         "tier": (meta[a]["tier"] if a in meta else "C"),
-        "comunidade": com.get(a), "pagerank": pagerank[a], "ei": ei.get(a),
+        "comunidade": com.get(a), "comunidade_nome": nomes.get(com.get(a)),
+        "pagerank": pagerank[a], "ei": ei.get(a),
         "audiencia": len(audiencia[a]),
         "x": (pos[i][0] - min(xs)) / dx, "y": (pos[i][1] - min(ys)) / dy,
     } for i, a in enumerate(ids)]
@@ -219,8 +314,9 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
     return {
         "nos": nos,
         "arestas": [{"de": x, "para": y, "peso": float(n)}
-                    for (x, y), n in sorted(comum.items())],
+                    for (x, y), n in sorted(esqueleto.items())],
         "ligacao": "audiencia",
+        "ligacoes_totais": total_ligacoes, "alfa": alfa,
         "arestas_diretas": len(diretas),
         "peso_direto": sum(diretas.values()),
         "de": conn.execute(
@@ -303,10 +399,13 @@ def coamplification(conn: sqlite3.Connection, window_start: str, scope: str,
     """
     fim = _fim(window_start)
     arestas = edge_scope_of(scope)
-    if arestas.startswith(TOPIC_PREFIX):
+    rotulos = topic_labels(arestas)
+    if rotulos:
+        marcas = ",".join("?" * len(rotulos))
         recorte = ("JOIN post p ON p.post_id = i.post_id "
-                   "JOIN collection_run cr ON cr.run_id = p.run_id", "AND cr.campaign_label = ?")
-        valores = (window_start, fim, arestas[len(TOPIC_PREFIX):])
+                   "JOIN collection_run cr ON cr.run_id = p.run_id",
+                   f"AND cr.campaign_label IN ({marcas})")
+        valores = (window_start, fim, *rotulos)
     else:
         recorte, valores = ("", ""), (window_start, fim)
 
@@ -400,17 +499,23 @@ def _tokens(texto: str) -> list[str]:
     return [w for w in re.findall(r"[a-z]{3,}", t) if w not in _STOP]
 
 
-def _passar(conn: sqlite3.Connection, window_start: str, label: str | None):
+def _filtro_rotulos(rotulos: list[str], window_start: str):
+    """Cláusula e valores para recortar posts pelos rótulos da pauta."""
+    base = (window_start, _fim(window_start))
+    if not rotulos:
+        return "", base
+    marcas = ",".join("?" * len(rotulos))
+    return f"AND cr.campaign_label IN ({marcas})", (*base, *rotulos)
+
+
+def _passar(conn: sqlite3.Connection, window_start: str, rotulos: list[str]):
     """Lê os posts da pauta uma vez e devolve (ator, tokens colados).
 
     Colar os tokens num string só em vez de guardar a lista é o que mantém o
     corpus inteiro na memória: 143 mil posts viram ~20 MB de texto em vez de
     três milhões de objetos Python.
     """
-    if label:
-        onde, valores = "AND cr.campaign_label = ?", (window_start, _fim(window_start), label)
-    else:
-        onde, valores = "", (window_start, _fim(window_start))
+    onde, valores = _filtro_rotulos(rotulos, window_start)
     total = 0
     docs: list[tuple[int, str]] = []
     for r in conn.execute(
@@ -497,17 +602,20 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
     é a fatia dos posts DESTE corpus, e o corpus está inteiro no banco.
     """
     arestas = edge_scope_of(scope)
-    label = arestas[len(TOPIC_PREFIX):] if arestas.startswith(TOPIC_PREFIX) else None
+    rotulos = topic_labels(arestas)
 
     comunidade = {r["actor_id"]: r["community_id"] for r in conn.execute(
         "SELECT actor_id, community_id FROM actor_community WHERE window_start = ? "
         "AND scope = ? AND graph_version = ?", (window_start, scope, graph_version))}
+    nomes_com = labels_of(conn, window_start, scope, graph_version)
 
-    total_posts, docs = _passar(conn, window_start, label)
+    total_posts, docs = _passar(conn, window_start, rotulos)
     com_texto = len(docs)
     # O próprio termo da coleta está em todo post por construção: mantê-lo
     # devolveria "Yanomami" como o enquadramento distintivo de toda comunidade.
-    proibidos = set(_tokens(label)) if label else set()
+    proibidos = set()
+    for r in rotulos:
+        proibidos |= set(_tokens(r))
     if proibidos:
         docs = [(a, " ".join(w for w in t.split() if w not in proibidos))
                 for a, t in docs]
@@ -591,7 +699,8 @@ def subtopics(conn: sqlite3.Connection, window_start: str, scope: str,
         for lift, share, termo, n in itens:
             topo = autores[(cid, termo)].most_common(CONCENTRACAO_TOP)
             linhas.append({
-                "comunidade": cid, "termo": termo, "posts": n,
+                "comunidade": cid, "comunidade_nome": nomes_com.get(cid),
+                "termo": termo, "posts": n,
                 "textos": textos.get(cid, {}).get(termo, 0),
                 "share": share, "lift": lift,
                 "concentracao": sum(c for _, c in topo) / n if n else 0.0,
@@ -640,6 +749,7 @@ def top_actors(conn: sqlite3.Connection, window_start: str, scope: str,
     meta = {r["actor_id"]: r for r in conn.execute(
         f"SELECT actor_id, handle, tier, is_public_figure FROM actor "
         f"WHERE actor_id IN ({marcas})", ids)}
+    nomes = labels_of(conn, window_start, scope, graph_version)
     eixo = positions_of(conn, window_start, scope, ids)
     eixo2 = positions_of(conn, window_start, scope, ids, axis=f"{AXIS}2")
     # O Δ do ESCORE entre janelas não é comparável: cada janela renormaliza
@@ -658,7 +768,9 @@ def top_actors(conn: sqlite3.Connection, window_start: str, scope: str,
             "actor_id": a, "handle": meta[a]["handle"] if a in meta else None,
             "tier": meta[a]["tier"] if a in meta else "C",
             "figura_publica": bool(meta[a]["is_public_figure"]) if a in meta else False,
-            "comunidade": com.get(a), "pagerank": r["value"],
+            "comunidade": com.get(a),
+            "comunidade_nome": nomes.get(com.get(a)),
+            "pagerank": r["value"],
             "in_degree": indeg.get(a), "ei": ei.get(a),
             "eixo": eixo.get(a), "eixo2": eixo2.get(a),
             "posto": posto_agora.get(a),
@@ -701,6 +813,7 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
     for linha in (subpautas or {}).get("linhas", []):
         termos.setdefault(linha["comunidade"], []).append(linha)
 
+    nomes = labels_of(conn, window_start, scope, graph_version)
     saida = []
     for r in conn.execute(
         "SELECT community_id, size, ei_mean, ei_choice, choice_actors FROM community "
@@ -710,7 +823,8 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
         cid = r["community_id"]
         medias = por_com.get(cid, [])
         saida.append({
-            "id": cid, "atores": r["size"], "ei": r["ei_choice"], "ei_bruto": r["ei_mean"],
+            "id": cid, "nome": nomes.get(cid),
+            "atores": r["size"], "ei": r["ei_choice"], "ei_bruto": r["ei_mean"],
             "n_escolha": r["choice_actors"],
             "eixo": (sum(medias) / len(medias)) if medias else None,
             "n_eixo": len(medias),
@@ -721,16 +835,23 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
     return saida
 
 
-def snapshot(conn: sqlite3.Connection, window_start: str, label: str,
+def snapshot(conn: sqlite3.Connection, window_start: str, label: str | list[str],
              view: str = "amp", core: bool = True, top: int = 12,
              mapa_top: int = MAPA_TOP,
              janela_anterior: str | None = None) -> dict[str, Any]:
     """Tudo que o Dossiê precisa de uma pauta numa janela, num objeto só."""
     scope = topic_scope(view, label, core)
+    # Ordem obrigatória: as sub-pautas alimentam os nomes, e os nomes entram em
+    # todas as tabelas. Nomear depois devolveria "#0" em metade da página.
+    sub = subtopics(conn, window_start, scope)
+    nomes = suggest_labels(conn, window_start, scope, sub)
     sub = subtopics(conn, window_start, scope)
     mapa = network_map(conn, window_start, scope, limit=mapa_top, view=view)
     return {
-        "janela": window_start, "pauta": label, "escopo": scope, "view": view,
+        "comunidades_nomeadas": nomes,
+        "janela": window_start, "escopo": scope, "view": view,
+        "pauta": (label if isinstance(label, str) else "+".join(sorted(label))),
+        "rotulos": topic_labels(edge_scope_of(scope)),
         "resumo": window_summary(conn, window_start, scope),
         "mapa": mapa,
         "pontes": bridges(mapa),
@@ -740,3 +861,111 @@ def snapshot(conn: sqlite3.Connection, window_start: str, label: str,
         "subpautas": sub,
         "coamplificacao": coamplification(conn, window_start, scope),
     }
+
+
+# =============================================================================
+# 6. NOMES DE COMUNIDADE
+# =============================================================================
+
+NOME_TERMOS = 2
+NOME_MAX = 38
+
+
+def suggest_labels(conn: sqlite3.Connection, window_start: str, scope: str,
+                   subpautas: dict[str, Any] | None = None,
+                   persist: bool = True,
+                   graph_version: int = GRAPH_VERSION) -> dict[int, dict[str, Any]]:
+    """Propõe um nome para cada comunidade a partir do que ela diz e de quem ela é.
+
+    Por que isto precisa existir. Um relatório que chama os grupos de "#0", "#1"
+    e "#2" não informa nada: o leitor tem de decorar a tabela de comunidades para
+    ler a tabela de atores, e depois decorar de novo para ler a de sub-pautas. O
+    número é um identificador interno, e ele vazou para a página inteira.
+
+    O nome sai de duas evidências que já foram medidas — os n-gramas que a
+    comunidade usa desproporcionalmente e os perfis de maior PageRank dentro
+    dela — e AS DUAS FICAM VISÍVEIS ao lado do nome. Isso é deliberado: um rótulo
+    curto é uma interpretação, e interpretação que esconde a evidência vira
+    afirmação sem procedência.
+
+    O nome proposto vai para `community.label`, que o schema já tinha. Ele é um
+    PONTO DE PARTIDA para a nomeação manual, não um substituto: quem conhece o
+    assunto troca "garimpo · ilegal" por "Crime ambiental" com `override`, e o
+    que estava lá antes continua reconstruível a partir dos termos.
+    """
+    termos: dict[int, list[dict[str, Any]]] = {}
+    for linha in (subpautas or {}).get("linhas", []):
+        termos.setdefault(linha["comunidade"], []).append(linha)
+
+    perfis: dict[int, list[str]] = {}
+    for r in conn.execute(
+        """
+        SELECT c.community_id AS cid, COALESCE(a.handle, a.platform_user_id) AS quem,
+               m.value AS pr
+        FROM actor_community c
+        JOIN actor_metric m ON m.actor_id = c.actor_id
+         AND m.window_start = c.window_start AND m.scope = c.scope
+         AND m.metric = 'pagerank' AND m.graph_version = c.graph_version
+        JOIN actor a ON a.actor_id = c.actor_id
+        WHERE c.window_start = ? AND c.scope = ? AND c.graph_version = ?
+        ORDER BY c.community_id, m.value DESC
+        """, (window_start, scope, graph_version)
+    ):
+        fila = perfis.setdefault(r["cid"], [])
+        if len(fila) < 3:
+            fila.append(r["quem"])
+
+    saida: dict[int, dict[str, Any]] = {}
+    for r in conn.execute(
+        "SELECT community_id, size FROM community WHERE window_start = ? AND "
+        "scope = ? AND graph_version = ? ORDER BY size DESC",
+        (window_start, scope, graph_version)
+    ):
+        cid = r["community_id"]
+        # ordena por lift: o termo que a comunidade usa de forma mais
+        # desproporcional descreve melhor do que o que ela usa mais
+        seus = sorted(termos.get(cid, []), key=lambda t: -t["lift"])[:NOME_TERMOS]
+        nome = " · ".join(t["termo"] for t in seus)
+        if len(nome) > NOME_MAX:
+            nome = nome[:NOME_MAX - 1].rstrip(" ·") + "…"
+        saida[cid] = {
+            "id": cid, "atores": r["size"],
+            "nome": nome or None,
+            "origem": "ngram" if nome else "sem termo distintivo",
+            "termos": [t["termo"] for t in seus],
+            "perfis": perfis.get(cid, []),
+        }
+
+    if persist:
+        conn.executemany(
+            "UPDATE community SET label = ? WHERE window_start = ? AND scope = ? "
+            "AND community_id = ? AND graph_version = ?",
+            [(v["nome"], window_start, scope, cid, graph_version)
+             for cid, v in saida.items()])
+    return saida
+
+
+def override_label(conn: sqlite3.Connection, window_start: str, scope: str,
+                   community_id: int, nome: str,
+                   graph_version: int = GRAPH_VERSION) -> bool:
+    """Substitui o nome proposto pelo nome do analista.
+
+    A nomeação manual é o passo que o formato do dossiê pressupõe. Ela grava por
+    cima da proposta e não apaga a evidência: os termos e os perfis continuam
+    saindo do dado a cada execução, então o rótulo escolhido continua auditável
+    contra aquilo que o justificou.
+    """
+    cur = conn.execute(
+        "UPDATE community SET label = ? WHERE window_start = ? AND scope = ? "
+        "AND community_id = ? AND graph_version = ?",
+        (nome, window_start, scope, community_id, graph_version))
+    return cur.rowcount > 0
+
+
+def labels_of(conn: sqlite3.Connection, window_start: str, scope: str,
+              graph_version: int = GRAPH_VERSION) -> dict[int, str]:
+    """Nomes já gravados, para juntar a qualquer tabela que mostre comunidade."""
+    return {r["community_id"]: r["label"] for r in conn.execute(
+        "SELECT community_id, label FROM community WHERE window_start = ? AND "
+        "scope = ? AND graph_version = ? AND label IS NOT NULL",
+        (window_start, scope, graph_version))}

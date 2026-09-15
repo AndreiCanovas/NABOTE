@@ -351,6 +351,7 @@ def cmd_dossie(args: argparse.Namespace) -> int:
             return 1
         window = windows[-1]
         scope = dossie_mod.topic_scope(args.view, args.topic, core=not args.no_core)
+        pauta = "+".join(sorted(args.topic))
         edge_scope = graph.edge_scope_of(scope)
 
         if not conn.execute(
@@ -429,9 +430,19 @@ def cmd_dossie(args: argparse.Namespace) -> int:
         mapa = saida["mapa"]
         if mapa["nos"]:
             print(f"mapa: {len(mapa['nos'])} de {mapa['de']} atores · "
-                  f"{len(mapa['arestas'])} ligações por audiência compartilhada · "
+                  f"{mapa['ligacoes_totais']} ligações por audiência, "
+                  f"{len(mapa['arestas'])} no esqueleto (alfa {mapa['alfa']}) · "
                   f"apenas {mapa['arestas_diretas']} arestas diretas de amplificação "
                   f"entre eles (peso {mapa['peso_direto']:.0f})", file=sys.stderr)
+        nomeadas = saida["comunidades_nomeadas"]
+        sem_nome = [c for c in nomeadas.values() if not c["nome"]]
+        print(f"nomes: {len(nomeadas) - len(sem_nome)} de {len(nomeadas)} comunidades "
+              f"nomeadas pelos termos distintivos", file=sys.stderr)
+        for c in sorted(nomeadas.values(), key=lambda v: -v["atores"])[:8]:
+            perfis = ", ".join("@" + p for p in c["perfis"][:2])
+            print(f"      #{c['id']:<3} {c['atores']:>6} atores  "
+                  f"{(c['nome'] or '(sem termo distintivo)'):<40} {perfis}",
+                  file=sys.stderr)
         co = saida["coamplificacao"]
         print(f"coamplificação: {co['grupos'] - co['grupos_ignorados']} de "
               f"{co['grupos']} alvos considerados "
@@ -443,11 +454,51 @@ def cmd_dossie(args: argparse.Namespace) -> int:
                            indent=None if args.compact else 2)
         if args.out:
             Path(args.out).write_text(texto + "\n", encoding="utf-8")
-            print(f"{args.out}  pauta {args.topic}  {len(saida['atores'])} atores, "
+            print(f"{args.out}  pauta {pauta}  {len(saida['atores'])} atores, "
                   f"{len(saida['comunidades'])} comunidades, "
                   f"{len(sub['linhas'])} sub-pautas")
         else:
             print(texto)
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_label(args: argparse.Namespace) -> int:
+    """Troca o nome proposto de uma comunidade pelo nome do analista.
+
+    A nomeação automática é ponto de partida: "garimpo · ilegal" descreve, mas
+    quem conhece o assunto escreve "Crime ambiental". A evidência que justificou
+    o rótulo continua saindo do dado a cada execução, então a troca não apaga a
+    procedência — só melhora a leitura.
+    """
+    from . import dossie as dossie_mod
+
+    conn = db.connect(args.db)
+    try:
+        if not args.set:
+            atuais = dossie_mod.labels_of(conn, args.window, args.scope)
+            if not atuais:
+                print(f"nenhuma comunidade nomeada em {args.window} {args.scope}.",
+                      file=sys.stderr)
+                return 1
+            for cid in sorted(atuais):
+                print(f"  #{cid:<4} {atuais[cid]}")
+            return 0
+        trocados = 0
+        for par in args.set:
+            if "=" not in par:
+                print(f"formato esperado ID=NOME, recebi {par!r}", file=sys.stderr)
+                return 2
+            cid, nome = par.split("=", 1)
+            if not dossie_mod.override_label(conn, args.window, args.scope,
+                                             int(cid), nome.strip()):
+                print(f"comunidade #{cid} não existe em {args.window} {args.scope}",
+                      file=sys.stderr)
+                return 1
+            print(f"  #{cid} → {nome.strip()}")
+            trocados += 1
+        print(f"{trocados} nome(s) trocado(s).", file=sys.stderr)
         return 0
     finally:
         conn.close()
@@ -618,7 +669,7 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
             # Um escopo por pauta, ao lado do escopo cheio. É o que permite
             # perguntar "quem é central NESTA pauta" em vez de "no grafo".
             for topico in graph.topics_in_window(conn, window):
-                escopo = f"{graph.TOPIC_PREFIX}{topico}"
+                escopo = graph.topic_scope([topico])
                 n = graph.aggregate_window(conn, window, scope=escopo)
                 print(f"{'':12}  {n:>7,} arestas  {escopo}".replace(",", "."))
         return 0
@@ -1374,8 +1425,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ds = _janela(sub.add_parser("dossie", help="aprofundamento de uma pauta, em JSON"),
                  com_view=True)
-    ds.add_argument("--topic", required=True, metavar="PAUTA",
-                    help="rótulo da pauta, como aparece em `runs`")
+    ds.add_argument("--topic", required=True, metavar="PAUTA", action="append",
+                    help="rótulo da pauta, como aparece em `runs`. Pode repetir: "
+                         "a coleta por Trending Topic parte a mesma pauta em "
+                         "etiquetas diferentes (CPMI e #CPMIdoGolpe), e juntá-las "
+                         "é o que impede o grafo de ser dividido por acidente")
     ds.add_argument("--top", type=int, default=12, metavar="N",
                     help="atores na tabela de influência (padrão: 12)")
     ds.add_argument("--mapa", type=int, default=60, metavar="N",
@@ -1386,6 +1440,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="não procura a janela anterior para o Δ do eixo")
     ds.add_argument("--out", metavar="ARQUIVO", help="grava em arquivo em vez da tela")
     ds.add_argument("--compact", action="store_true", help="JSON numa linha só")
+
+    lb = sub.add_parser("label", help="nomeia comunidades de um escopo")
+    lb.add_argument("--window", required=True, metavar="JANELA")
+    lb.add_argument("--scope", required=True, metavar="ESCOPO",
+                    help="escopo analítico, ex. amp:topic:CPMI:core")
+    lb.add_argument("--set", action="append", metavar="ID=NOME",
+                    help="troca o nome de uma comunidade. Pode repetir. "
+                         "Sem --set, lista os nomes atuais")
 
     cp = sub.add_parser("compare", help="duas análises lado a lado")
     cp.add_argument("a", metavar="JANELA:ESCOPO",
@@ -1472,6 +1534,7 @@ def main(argv: list[str] | None = None) -> int:
             "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
             "themes": cmd_themes, "export": cmd_export,
             "compare": cmd_compare, "radar": cmd_radar, "dossie": cmd_dossie,
+            "label": cmd_label,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)

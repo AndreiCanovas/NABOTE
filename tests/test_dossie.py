@@ -641,3 +641,233 @@ class TestTextosPorComunidade(DossieTestCase):
             self.assertNotEqual(len(set(valores.values())), 1,
                                 f"as duas comunidades receberam o mesmo número "
                                 f"global de textos: {valores}")
+
+
+class TestBackbone(unittest.TestCase):
+    """O filtro que torna o mapa legível.
+
+    A projeção por audiência é quase completa — 1.079 ligações entre 60 perfis
+    no dado real, densidade 0,61 — e um layout de força sobre isso colapsa tudo
+    em duas manchas. O filtro guarda as ligações desproporcionais de cada nó.
+    """
+
+    def test_reduz_um_grafo_quase_completo(self):
+        arestas = {}
+        for i in range(30):
+            for j in range(i + 1, 30):
+                arestas[(i, j)] = 1.0
+        # um par com ligação muito mais forte que o resto
+        arestas[(0, 1)] = 200.0
+        fica = dossie.backbone(arestas)
+        self.assertIn((0, 1), fica, "a ligação desproporcional foi cortada")
+        self.assertLess(len(fica), len(arestas) * 0.5,
+                        f"filtrou pouco: {len(fica)} de {len(arestas)}")
+
+    def test_grafo_uniforme_nao_tem_esqueleto_a_preservar(self):
+        """Se todo par tem o mesmo peso, nenhuma ligação é desproporcional —
+        o filtro não pode inventar estrutura onde não há."""
+        arestas = {(i, j): 1.0 for i in range(20) for j in range(i + 1, 20)}
+        fica = dossie.backbone(arestas, alfa=0.05)
+        self.assertLess(len(fica), len(arestas) * 0.2,
+                        f"guardou {len(fica)} de {len(arestas)} num grafo uniforme")
+
+    def test_perfil_pequeno_mantem_a_ligacao_que_o_define(self):
+        """Um corte por peso absoluto apagaria o nó de escala pequena inteiro.
+        O filtro é por nó, então a ligação sobrevive pela ponta fraca."""
+        arestas = {}
+        for i in range(2, 12):
+            for j in range(i + 1, 12):
+                arestas[(i, j)] = 100.0          # aglomerado grande e pesado
+        arestas[(0, 1)] = 3.0                    # par pequeno, isolado
+        arestas[(1, 2)] = 1.0
+        fica = dossie.backbone(arestas)
+        self.assertIn((0, 1), fica, "o par de escala pequena sumiu do mapa")
+
+    def test_grau_um_mantem_a_unica_ligacao(self):
+        fica = dossie.backbone({(0, 1): 5.0, (1, 2): 5.0, (2, 3): 5.0})
+        self.assertIn((0, 1), fica)
+        self.assertIn((2, 3), fica)
+
+    def test_alfa_menor_corta_mais(self):
+        arestas = {(i, j): float(1 + (i * j) % 7) for i in range(25)
+                   for j in range(i + 1, 25)}
+        frouxo = dossie.backbone(arestas, alfa=0.3)
+        apertado = dossie.backbone(arestas, alfa=0.01)
+        self.assertLess(len(apertado), len(frouxo))
+        self.assertTrue(set(apertado) <= set(frouxo),
+                        "o esqueleto apertado precisa ser subconjunto do frouxo")
+
+
+class TestMapaComBackbone(DossieTestCase):
+    def test_o_mapa_reporta_o_quanto_recortou(self):
+        m = dossie.network_map(self.conn, self.window, self.scope, limit=30)
+        self.assertIn("ligacoes_totais", m)
+        self.assertLessEqual(len(m["arestas"]), m["ligacoes_totais"])
+        # o nível é escolhido pelo grafo, então o que se exige é que ele
+        # exista na escada e venha reportado
+        self.assertIn(m["alfa"], dossie.BACKBONE_ESCADA)
+
+    def test_layout_continua_deterministico_com_o_filtro(self):
+        a = dossie.network_map(self.conn, self.window, self.scope, limit=25)
+        b = dossie.network_map(self.conn, self.window, self.scope, limit=25)
+        for na, nb in zip(a["nos"], b["nos"]):
+            self.assertAlmostEqual(na["x"], nb["x"], places=9)
+            self.assertAlmostEqual(na["y"], nb["y"], places=9)
+
+
+class TestEsqueletoLegivel(unittest.TestCase):
+    """O nível do filtro é escolhido pelo grafo, não fixado por constante.
+
+    Com alfa fixo em 0,05 a densidade real deixava 27 dos 60 perfis sem
+    nenhuma ligação — e nó solto num layout de força é empurrado para a
+    periferia por repulsão pura, com posição que não significa nada.
+    """
+
+    def _denso(self, seed=9):
+        import random
+        rng = random.Random(seed)
+        grupo = {i: (0 if i < 18 else 1) for i in range(60)}
+        ar = {}
+        for i in range(60):
+            for j in range(i + 1, 60):
+                mesmo = grupo[i] == grupo[j]
+                if mesmo and rng.random() < 0.85:
+                    ar[(i, j)] = rng.choice([2, 3, 4, 5]) * rng.randint(20, 160)
+                elif not mesmo and rng.random() < 0.25:
+                    ar[(i, j)] = rng.randint(2, 12)
+        return ar
+
+    def test_ninguem_fica_solto(self):
+        ar = self._denso()
+        bb, alfa = dossie.esqueleto_legivel(ar)
+        nos = {x for p in ar for x in p}
+        ligados = {x for p in bb for x in p}
+        self.assertEqual(len(ligados), len(nos),
+                         f"{len(nos)-len(ligados)} perfis ficaram sem ligação (alfa={alfa})")
+
+    def test_escolhe_o_mais_enxuto_que_serve(self):
+        """Se o nível anterior da escada tivesse servido, ele teria sido usado."""
+        ar = self._denso()
+        bb, alfa = dossie.esqueleto_legivel(ar)
+        i = dossie.BACKBONE_ESCADA.index(alfa)
+        if i > 0:
+            antes = dossie.backbone(ar, dossie.BACKBONE_ESCADA[i - 1])
+            nos = {x for p in ar for x in p}
+            self.assertLess(len({x for p in antes for x in p}), len(nos),
+                            "um nível mais enxuto também servia e não foi usado")
+
+    def test_corta_de_verdade(self):
+        ar = self._denso()
+        bb, _ = dossie.esqueleto_legivel(ar)
+        self.assertLess(len(bb), len(ar) * 0.25,
+                        f"guardou {len(bb)} de {len(ar)} — o mapa continua uma mancha")
+
+    def test_grafo_esparso_mantem_todo_mundo_ligado(self):
+        """Não é "sobrevive inteiro": com pesos quase uniformes o filtro pode
+        cortar a ligação do meio de um caminho, porque ela é genuinamente a
+        menos desproporcional das duas pontas. O que a escada garante é que
+        ninguém fica sem nenhuma ligação."""
+        ar = {(0, 1): 5.0, (1, 2): 4.0, (2, 3): 6.0, (3, 4): 3.0}
+        bb, alfa = dossie.esqueleto_legivel(ar)
+        nos = {x for p in ar for x in p}
+        ligados = {x for p in bb for x in p}
+        self.assertEqual(ligados, nos, f"alguém ficou solto (alfa={alfa})")
+        self.assertGreaterEqual(len(bb), len(nos) // 2)
+
+    def test_vazio_nao_quebra(self):
+        bb, alfa = dossie.esqueleto_legivel({})
+        self.assertEqual(bb, {})
+        self.assertGreater(alfa, 0)
+
+
+class TestNomesDeComunidade(DossieTestCase):
+    """"Comunidade #0" não informa nada.
+
+    O número é identificador interno e vazou para a página inteira: para ler a
+    tabela de atores era preciso decorar a de comunidades, e depois decorar de
+    novo para ler a de sub-pautas.
+    """
+
+    def _nomear(self):
+        sub = dossie.subtopics(self.conn, self.window, self.scope,
+                               min_posts=5, min_textos=3)
+        return dossie.suggest_labels(self.conn, self.window, self.scope, sub), sub
+
+    def test_propoe_nome_a_partir_dos_termos_medidos(self):
+        nomes, _ = self._nomear()
+        self.assertTrue(nomes)
+        com_nome = [v for v in nomes.values() if v["nome"]]
+        self.assertTrue(com_nome, "nenhuma comunidade recebeu nome")
+        for v in com_nome:
+            self.assertTrue(v["termos"], "nome sem termo que o justifique")
+            for t in v["termos"]:
+                self.assertIn(t, v["nome"])
+
+    def test_a_evidencia_fica_junto_do_nome(self):
+        """Rótulo curto é interpretação; interpretação que esconde a evidência
+        vira afirmação sem procedência."""
+        nomes, _ = self._nomear()
+        for v in nomes.values():
+            self.assertIn("termos", v)
+            self.assertIn("perfis", v)
+            self.assertIn("origem", v)
+
+    def test_o_nome_vai_para_a_tabela_de_atores(self):
+        self._nomear()
+        linhas = dossie.top_actors(self.conn, self.window, self.scope, limit=8)
+        self.assertTrue(linhas)
+        self.assertTrue(any(r["comunidade_nome"] for r in linhas),
+                        "a tabela de atores continua só com número")
+
+    def test_o_nome_vai_para_os_cartoes_e_para_as_subpautas(self):
+        _, sub = self._nomear()
+        cards = dossie.community_rows(self.conn, self.window, self.scope, sub)
+        self.assertTrue(any(c["nome"] for c in cards))
+        sub2 = dossie.subtopics(self.conn, self.window, self.scope,
+                                min_posts=5, min_textos=3)
+        self.assertTrue(any(l["comunidade_nome"] for l in sub2["linhas"]))
+
+    def test_o_snapshot_nomeia_antes_de_montar_as_tabelas(self):
+        """Ordem: sub-pautas → nomes → tabelas. Nomear depois devolveria "#0"
+        em metade da página."""
+        from nabote import positions
+        positions.compute_positions(self.conn, self.window, self.scope)
+        s = dossie.snapshot(self.conn, self.window, self.PAUTA, core=False, mapa_top=20)
+        self.assertIn("comunidades_nomeadas", s)
+        self.assertTrue(any(c["nome"] for c in s["comunidades"]),
+                        "os cartões saíram sem nome")
+        self.assertTrue(any(a["comunidade_nome"] for a in s["atores"]),
+                        "os atores saíram sem nome")
+
+    def test_o_analista_pode_trocar_o_nome(self):
+        """A nomeação manual é o passo que o formato pressupõe."""
+        nomes, _ = self._nomear()
+        cid = sorted(nomes)[0]
+        self.assertTrue(dossie.override_label(
+            self.conn, self.window, self.scope, cid, "Crime ambiental"))
+        self.assertEqual(
+            dossie.labels_of(self.conn, self.window, self.scope)[cid],
+            "Crime ambiental")
+
+    def test_trocar_nome_nao_apaga_a_evidencia(self):
+        nomes, sub = self._nomear()
+        cid = sorted(nomes)[0]
+        termos_antes = nomes[cid]["termos"]
+        dossie.override_label(self.conn, self.window, self.scope, cid, "Outro nome")
+        depois = dossie.suggest_labels(self.conn, self.window, self.scope, sub,
+                                       persist=False)
+        self.assertEqual(depois[cid]["termos"], termos_antes)
+
+    def test_comunidade_sem_termo_distintivo_diz_isso(self):
+        nomes = dossie.suggest_labels(self.conn, self.window, self.scope,
+                                      {"linhas": []}, persist=False)
+        self.assertTrue(nomes)
+        for v in nomes.values():
+            self.assertIsNone(v["nome"])
+            self.assertEqual(v["origem"], "sem termo distintivo")
+
+    def test_nome_nao_estoura_o_cartao(self):
+        nomes, _ = self._nomear()
+        for v in nomes.values():
+            if v["nome"]:
+                self.assertLessEqual(len(v["nome"]), dossie.NOME_MAX)

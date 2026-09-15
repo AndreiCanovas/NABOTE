@@ -25,7 +25,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any
 
-from .graph import GRAPH_VERSION, TOPIC_PREFIX, WINDOW_SQL, topics_in_window
+from .graph import (GRAPH_VERSION, TOPIC_PREFIX, WINDOW_SQL,
+                    topic_scope, topics_in_window)
 
 # Abaixo disto a presença da pauta numa comunidade é respingo, não circulação.
 SPREAD_FLOOR = 0.05
@@ -112,7 +113,7 @@ def topic_actors(conn: sqlite3.Connection, window_start: str, topico: str,
     diferentes conforme a pauta, e uma métrica global de influência esconderia
     exatamente esse comportamento.
     """
-    scope = f"{view}:{TOPIC_PREFIX}{topico}"
+    scope = f"{view}:{topic_scope([topico])}"
     return [dict(r) for r in conn.execute(
         """
         SELECT COALESCE(a.handle, a.platform_user_id) AS quem,
