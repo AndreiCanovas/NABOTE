@@ -389,8 +389,9 @@ def imported_partition(
 
 
 # Abaixo disto, duas comunidades não são "a mesma vista duas vezes": são
-# comunidades diferentes que por acaso compartilham gente.
-MATCH_MIN_JACCARD = 0.2
+# comunidades diferentes que por acaso compartilham gente. O corte é sobre a
+# CONTENÇÃO, não sobre o Jaccard — ver `match_communities`.
+MATCH_MIN_OVERLAP = 0.5
 
 
 def match_communities(
@@ -434,15 +435,24 @@ def match_communities(
             com_b = onde.get(actor)
             if com_b is not None:
                 contagem[com_b] = contagem.get(com_b, 0) + 1
-        melhor, comum, jaccard = None, 0, 0.0
+        melhor, comum, overlap = None, 0, 0.0
         for com_b, n in contagem.items():
-            j = n / (len(membros) + len(b[com_b]) - n)
-            if j > jaccard:
-                melhor, comum, jaccard = com_b, n, j
+            # CONTENÇÃO, não Jaccard: a fatia do menor dos dois que está no
+            # outro. Jaccard pune diferença de tamanho, e diferença de tamanho
+            # aqui é normal, não discordância — o grafo de respostas cobre uma
+            # fração do de amplificação, então uma comunidade inteira contida em
+            # outra dava Jaccard 0,12 e era declarada "sem par", quando a
+            # partição tinha sido importada e os membros eram os mesmos.
+            o = n / min(len(membros), len(b[com_b]))
+            if o > overlap:
+                melhor, comum, overlap = com_b, n, o
+        n_b = len(b[melhor]) if melhor is not None else 0
         linhas.append({
-            "a": com_a, "b": melhor, "jaccard": jaccard,
-            "n_a": len(membros), "n_b": len(b[melhor]) if melhor is not None else 0,
-            "comum": comum,
+            "a": com_a, "b": melhor, "overlap": overlap,
+            # Jaccard viaja junto porque separa "contida" de "igual": contenção
+            # 1,0 com Jaccard 0,12 quer dizer que B é um pedaço pequeno de A.
+            "jaccard": comum / (len(membros) + n_b - comum) if comum else 0.0,
+            "n_a": len(membros), "n_b": n_b, "comum": comum,
         })
     return linhas
 

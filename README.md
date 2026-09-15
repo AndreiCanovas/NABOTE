@@ -339,12 +339,23 @@ E discute com os outros?* e *os campos são os mesmos toda semana?*
 
 O casamento é por **sobreposição de membros**, nunca por número de comunidade. A
 numeração é por tamanho dentro do recorte, então "#0" de uma semana não é "#0"
-da seguinte, e uma tabela alinhada por número sairia plausível e falsa. Quando a
-partição é a mesma — visões comparadas via `--partition` — a sobreposição sai em
-1,0 e confirma que nada se embaralhou.
+da seguinte, e uma tabela alinhada por número sairia plausível e falsa.
 
-Comunidade de A cuja melhor sobreposição em B fica abaixo de 20% aparece sem
-par: não é a mesma comunidade vista duas vezes.
+Duas colunas, porque uma só engana:
+
+| coluna | o que é |
+| --- | --- |
+| `contido` | fatia do **menor** dos dois que está no outro — é por ela que o par é escolhido |
+| `jaccard` | semelhança simétrica |
+
+`contido` 1,00 com `jaccard` baixo quer dizer que B é um **pedaço** de A, não
+outra comunidade. É o caso normal ao comparar visões: o grafo de respostas cobre
+uma fração do de amplificação, então a comunidade importada é um subconjunto da
+original. Casar por Jaccard ali dava 0,12 e declarava "sem par" duas comunidades
+cujos membros eram literalmente os mesmos — diferença de tamanho era cobertura,
+não discordância.
+
+Comunidade de A cuja contenção em B fica abaixo de 50% aparece sem par.
 
 ### Exportação (passo 4)
 
@@ -377,7 +388,7 @@ não leu a conversa, e número sem ressalva vira slide.
 python3 -m unittest discover -s tests
 ```
 
-196 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+198 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

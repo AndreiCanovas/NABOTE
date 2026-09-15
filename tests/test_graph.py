@@ -781,8 +781,36 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         self._planta("2023-01-30", "amp", {0: range(21, 31), 1: range(1, 21)})
         linhas = graph.match_communities(self.conn, "2023-01-23", "amp",
                                          "2023-01-30", "amp")
-        pares = {l["a"]: (l["b"], round(l["jaccard"], 3)) for l in linhas}
+        pares = {l["a"]: (l["b"], round(l["overlap"], 3)) for l in linhas}
         self.assertEqual(pares, {0: (1, 1.0), 1: (0, 1.0)})
+
+    def test_subconjunto_nao_e_comunidade_diferente(self):
+        """O caso que o Jaccard errava no dado real.
+
+        O grafo de respostas cobre uma fração do de amplificação, então a
+        comunidade importada é um SUBCONJUNTO da original. Jaccard dava 0,12 e
+        declarava "sem par" — mas a partição tinha sido importada e os membros
+        eram literalmente os mesmos. Diferença de tamanho ali é cobertura, não
+        discordância.
+        """
+        self._planta("2023-01-23", "amp:core", {0: range(1, 31)})
+        self._planta("2023-01-23", "reply@amp:core", {0: range(1, 6)})
+        linha = graph.match_communities(
+            self.conn, "2023-01-23", "amp:core",
+            "2023-01-23", "reply@amp:core")[0]
+        self.assertEqual(linha["b"], 0)
+        self.assertEqual(linha["overlap"], 1.0, "B inteiro está dentro de A")
+        self.assertLess(linha["jaccard"], 0.2, "e o Jaccard chamaria de par fraco")
+
+    def test_jaccard_separa_contida_de_igual(self):
+        """Contenção 1,0 sozinha não distingue 'igual' de 'pedacinho de'. O
+        Jaccard viaja junto justamente para isso aparecer."""
+        self._planta("2023-01-23", "amp", {0: range(1, 31)})
+        self._planta("2023-01-30", "amp", {0: range(1, 31)})
+        igual = graph.match_communities(self.conn, "2023-01-23", "amp",
+                                        "2023-01-30", "amp")[0]
+        self.assertEqual(igual["overlap"], 1.0)
+        self.assertEqual(igual["jaccard"], 1.0)
 
     def test_particao_identica_da_jaccard_um(self):
         """Autoverificação: comparando visões via --partition, a partição é a
@@ -793,6 +821,7 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         for linha in graph.match_communities(
                 self.conn, "2023-01-23", "amp:core", "2023-01-23", "reply@amp:core"):
             self.assertEqual(linha["a"], linha["b"])
+            self.assertEqual(linha["overlap"], 1.0)
             self.assertEqual(linha["jaccard"], 1.0)
 
     def test_sem_par_devolve_none(self):
@@ -801,19 +830,20 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         linha = graph.match_communities(self.conn, "2023-01-23", "amp",
                                         "2023-01-30", "amp")[0]
         self.assertIsNone(linha["b"])
+        self.assertEqual(linha["overlap"], 0.0)
         self.assertEqual(linha["jaccard"], 0.0)
 
     def test_sobreposicao_parcial_escolhe_o_maior(self):
-        """Com dois candidatos, vence o de maior Jaccard — não o de maior
+        """Com dois candidatos, vence o de maior CONTENÇÃO — não o de maior
         interseção bruta, que favoreceria sempre a comunidade grande."""
         self._planta("2023-01-23", "amp", {0: range(1, 11)})
         self._planta("2023-01-30", "amp", {
-            0: range(1, 7),        # 6 em comum, mas comunidade de 6 → J = 6/10
-            1: range(7, 31)})      # 4 em comum, comunidade de 24 → J = 4/30
+            0: range(1, 7),        # 6 em comum, contenção 6/6 = 1,00
+            1: range(7, 31)})      # 4 em comum, contenção 4/10 = 0,40
         linha = graph.match_communities(self.conn, "2023-01-23", "amp",
                                         "2023-01-30", "amp")[0]
         self.assertEqual(linha["b"], 0)
-        self.assertAlmostEqual(linha["jaccard"], 0.6)
+        self.assertAlmostEqual(linha["overlap"], 1.0)
 
     def test_ordena_da_maior_para_a_menor(self):
         self._planta("2023-01-23", "amp", {0: range(1, 6), 1: range(6, 26)})

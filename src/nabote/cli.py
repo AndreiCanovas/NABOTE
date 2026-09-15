@@ -243,33 +243,40 @@ def cmd_compare(args: argparse.Namespace) -> int:
         ma, mb = metricas(ja, ea), metricas(jb, eb)
         print(f"A = {ja}  {ea}")
         print(f"B = {jb}  {eb}\n")
-        print(f"{'A':>5}{'B':>7}{'sobrep':>9}{'atores A':>11}{'atores B':>11}"
-              f"{'E-I A':>9}{'E-I B':>9}{'salto':>9}")
-        print("-" * 70)
-        for linha in linhas[:args.top]:
-            if linha["n_a"] < args.min_community:
-                continue
+        print(f"{'A':>5}{'B':>7}{'contido':>9}{'jaccard':>9}{'atores A':>11}"
+              f"{'atores B':>11}{'E-I A':>9}{'E-I B':>9}{'salto':>9}")
+        print("-" * 80)
+        mostradas = [l for l in linhas[:args.top]
+                     if l["n_a"] >= args.min_community]
+        for linha in mostradas:
             ra = ma.get(linha["a"])
             rb = mb.get(linha["b"]) if linha["b"] is not None else None
             # `ei_choice` é o comparável; `ei_mean` anda junto do tamanho.
             va = ra["ei_choice"] if ra and ra["ei_choice"] is not None else None
             vb = rb["ei_choice"] if rb and rb["ei_choice"] is not None else None
-            fraco = linha["jaccard"] < graph.MATCH_MIN_JACCARD
+            fraco = linha["overlap"] < graph.MATCH_MIN_OVERLAP
+            if fraco:
+                vb = None
+            # Formatação em variáveis, não em f-string aninhada: a versão
+            # aninhada deixava um float cru escapar no ramo do par fraco.
             alvo = "—" if linha["b"] is None or fraco else f"#{linha['b']}"
-            print(f"  #{linha['a']:<3}{alvo:>7}{linha['jaccard']:>9.2f}"
-                  f"{linha['n_a']:>11,}{linha['n_b'] if not fraco else 0:>11,}"
-                  f"{va if va is None else f'{va:+.2f}':>9}"
-                  f"{(vb if vb is None or fraco else f'{vb:+.2f}') or '—':>9}"
-                  f"{('—' if va is None or vb is None or fraco else f'{vb - va:+.2f}'):>9}"
-                  .replace(",", "."))
+            txt_a = "—" if va is None else f"{va:+.2f}"
+            txt_b = "—" if vb is None else f"{vb:+.2f}"
+            salto = "—" if va is None or vb is None else f"{vb - va:+.2f}"
+            n_b = 0 if fraco else linha["n_b"]
+            print(f"  #{linha['a']:<3}{alvo:>7}{linha['overlap']:>9.2f}"
+                  f"{linha['jaccard']:>9.2f}{linha['n_a']:>11,}{n_b:>11,}"
+                  f"{txt_a:>9}{txt_b:>9}{salto:>9}".replace(",", "."))
 
-        fracos = [l for l in linhas[:args.top]
-                  if l["n_a"] >= args.min_community
-                  and l["jaccard"] < graph.MATCH_MIN_JACCARD]
+        fracos = [l for l in mostradas if l["overlap"] < graph.MATCH_MIN_OVERLAP]
         if fracos:
             print(f"\n{len(fracos)} comunidade(s) de A sem par em B "
-                  f"(sobreposição < {graph.MATCH_MIN_JACCARD:.0%}): "
+                  f"(contenção < {graph.MATCH_MIN_OVERLAP:.0%}): "
                   f"não são a mesma comunidade vista duas vezes.")
+        print("\ncontido = fatia do MENOR dos dois que está no outro · "
+              "jaccard = semelhança simétrica")
+        print("contido 1,00 com jaccard baixo: B é um pedaço de A, não outra "
+              "comunidade.")
         return 0
     finally:
         conn.close()
