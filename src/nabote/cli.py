@@ -376,6 +376,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             # ENTRADA e pode nunca ter amplificado ninguém. O que a força ≥ 2
             # garante é mais de uma aresta, logo mais de uma chance de
             # atravessar para outra comunidade.
+            conc = r.get("concentracao") or {}
+            if conc.get("top1", 0) >= graph.CONCENTRATION_ALERT:
+                print(f"{'':12}  ATENÇÃO: 1 ator concentra {conc['top1']:.0%} do "
+                      f"peso de saída ({conc['n']} maiores: {conc['topn']:.0%}). "
+                      f"A métrica descreve essa conta, não a rede.")
             if r.get("sem_particao"):
                 print(f"{'':12}  {r['sem_particao']} atores deste grafo não estão "
                       f"na partição importada e ficaram de fora")
@@ -436,6 +441,14 @@ def cmd_dump(args: argparse.Namespace) -> int:
         print(f"janela {window}   visão {scope}\n")
 
         recorte = "" if args.community is None else " AND c.community_id = :com"
+        # PageRank é herdado: quem é repostado por um hub recebe quase todo o
+        # rank dele. Num grafo fragmentado isso põe contas de in-degree 1 acima
+        # de contas com dezenas de arestas. O filtro existe para a lista poder
+        # ser lida como ranking.
+        if args.min_degree:
+            recorte += " AND m.actor_id IN (SELECT actor_id FROM actor_metric "
+            recorte += ("WHERE window_start=:w AND scope=:s AND metric='in_degree_w' "
+                        "AND value >= :grau)")
         rows = conn.execute(f"""
             SELECT a.handle, a.platform_user_id AS did, a.tier,
                    MAX(CASE WHEN m.metric='pagerank'    THEN m.value END) pr,
@@ -449,7 +462,7 @@ def cmd_dump(args: argparse.Namespace) -> int:
             WHERE m.window_start=:w AND m.scope=:s{recorte}
             GROUP BY a.actor_id ORDER BY pr DESC LIMIT :n
         """, {"w": window, "s": scope, "n": args.top,
-              "com": args.community}).fetchall()
+              "com": args.community, "grau": args.min_degree}).fetchall()
 
         if args.community is not None:
             print(f"atores da comunidade #{args.community}"
@@ -595,7 +608,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                                   "partition": None}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
                             "min_community": 1, "community": None, "core": False,
-                            "partition": None,
+                            "partition": None, "min_degree": 0.0,
                             "view": args.view, "top": args.top}),
     ]
     for name, func, extra in steps:
@@ -863,6 +876,10 @@ def build_parser() -> argparse.ArgumentParser:
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True, com_core=True)
     d.add_argument("--top", type=int, default=15)
+    d.add_argument("--min-degree", type=float, default=0.0, metavar="G",
+                   help="só atores com in-degree ponderado ≥ G. PageRank é "
+                        "herdado — sem isto, conta com uma aresta só aparece "
+                        "acima de conta com dezenas")
     d.add_argument("--min-community", type=int, default=1, metavar="N",
                    help="lista TODAS as comunidades com N atores ou mais, "
                         "ignorando --top; a cauda vira uma linha de resumo")

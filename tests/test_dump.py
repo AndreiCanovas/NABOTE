@@ -46,7 +46,7 @@ class DumpTestCase(unittest.TestCase):
         args = argparse.Namespace(
             db=str(self.path), window=None, all=False, scope="all",
             view="amp", top=10, min_community=1, community=None, core=False,
-            partition=None)
+            partition=None, min_degree=0.0)
         for key, value in kwargs.items():
             setattr(args, key, value)
         buffer = io.StringIO()
@@ -125,6 +125,23 @@ class TestNucleoNoDump(DumpTestCase):
         podadas = cheio - nucleo
         self.assertTrue(any("solto" in linha for linha in podadas),
                         "as díades soltas deveriam ter sumido da lista")
+
+
+class TestMinDegree(DumpTestCase):
+    def test_filtra_quem_tem_rank_herdado(self):
+        """PageRank é herdado: quem é repostado por um hub recebe quase todo o
+        rank dele. No grafo de respostas real isso pôs seis contas de in-degree
+        1 acima de contas com dezenas de arestas."""
+        sem_filtro = self._linhas(self.dump(top=50))
+        com_filtro = self._linhas(self.dump(top=50, min_degree=3.0))
+        self.assertTrue(com_filtro, "o filtro removeu todo mundo")
+        self.assertLess(len(com_filtro), len(sem_filtro))
+        for linha in com_filtro:
+            self.assertGreaterEqual(float(linha.split()[4]), 3.0)
+
+    def _linhas(self, saida: str) -> list[str]:
+        trecho = saida.split("-" * 72)[1].split("\ncomunidades")[0]
+        return [l for l in trecho.splitlines() if l.strip()]
 
 
 class TestFiltroDeComunidade(DumpTestCase):

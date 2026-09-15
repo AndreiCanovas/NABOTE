@@ -199,6 +199,37 @@ def load_graph(
     return graph, actor_ids
 
 
+def weight_concentration(graph: Any, top: int = 5) -> dict[str, float]:
+    """Quanto do peso de SAÍDA está concentrado em poucos atores.
+
+    Um grafo pode ter milhares de nós e ainda assim ser, na prática, uma pessoa
+    só falando. No grafo de respostas da base histórica, UMA conta aparecia em
+    15 das 20 arestas mais pesadas. Métrica de rede calculada ali descreve o
+    comportamento daquela conta, não o da rede — e sai parecendo um achado
+    coletivo.
+
+    Isso é sinal de duas coisas ao mesmo tempo, e as duas importam: qualidade de
+    amostra (a coleta pegou pouco e um prolífico domina) e fenômeno real (conta
+    automatizada ou hiperativa). Em nenhum dos casos a leitura estrutural vale
+    sem que o número apareça primeiro.
+    """
+    if graph.ecount() == 0:
+        return {"top1": 0.0, "topn": 0.0, "n": top}
+    saida = sorted(graph.strength(mode="out", weights="weight"), reverse=True)
+    total = sum(saida)
+    if not total:
+        return {"top1": 0.0, "topn": 0.0, "n": top}
+    return {"top1": saida[0] / total,
+            "topn": sum(saida[:top]) / total,
+            "n": top}
+
+
+# Acima disto, um único ator responde por tanta coisa que a métrica de rede
+# vira biografia dele. Não é lei da natureza: é o ponto em que a leitura passa
+# a exigir que se olhe a conta antes de olhar o grafo.
+CONCENTRATION_ALERT = 0.05
+
+
 def component_stats(graph: Any) -> dict[str, Any]:
     """Fragmentação do grafo, medida em componentes fracamente conexos.
 
@@ -407,6 +438,7 @@ def analyze_window(
     if graph.vcount() == 0:
         return {"window_start": window_start, "scope": scope, "nodes": 0,
                 "edges": 0, "communities": 0, "sem_particao": descartados,
+                "concentracao": weight_concentration(graph),
                 **component_stats(graph)}
 
     if partition_scope:
@@ -465,6 +497,7 @@ def analyze_window(
         "nodes": graph.vcount(), "edges": graph.ecount(),
         "communities": len(sizes), "metrics": sorted(metrics),
         "sem_particao": descartados,
+        "concentracao": weight_concentration(graph),
         **component_stats(graph),
         "computed_at": utcnow(),
     }

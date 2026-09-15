@@ -218,6 +218,27 @@ def extra_replies(community: int, target_community: int, indices: list[int],
     return events
 
 
+def single_voice_graph(outros: int = 200, do_dominante: int = 400, seed: int = 4):
+    """Grafo onde UM ator responde por quase todo o peso de saída.
+
+    É a forma degenerada que apareceu no grafo de respostas real: uma conta em
+    15 das 20 arestas mais pesadas. Métrica de rede ali descreve aquela conta,
+    não a rede.
+    """
+    import igraph
+
+    rng = random.Random(seed)
+    n = outros + 2
+    edges = [(0, rng.randrange(2, n)) for _ in range(do_dominante)]
+    edges += [(rng.randrange(2, n), rng.randrange(2, n)) for _ in range(outros)]
+    edges = [(a, b) for a, b in edges if a != b]
+    g = igraph.Graph(directed=True)
+    g.add_vertices(n)
+    g.add_edges(edges)
+    g.es["weight"] = [1.0] * len(edges)
+    return g
+
+
 def write_jsonl(events: list[dict[str, Any]], path) -> None:
     import json
     from pathlib import Path

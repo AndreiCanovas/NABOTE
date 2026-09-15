@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from nabote import db, graph, ingest  # noqa: E402
 from synthetic import (  # noqa: E402
     ListSource, ambiguous_graph, block_graph, did, extra_replies,
-    hub_audience_graph, planted_communities, scattered_dyads)
+    hub_audience_graph, planted_communities, scattered_dyads,
+    single_voice_graph)
 
 
 class TestWindow(unittest.TestCase):
@@ -703,6 +704,47 @@ class TestParticaoImportada(GraphTestCase):
         escopos = {r["scope"] for r in self.conn.execute(
             "SELECT DISTINCT scope FROM community")}
         self.assertEqual(escopos, {"amp", "reply", "reply@amp"})
+
+
+class TestConcentracao(unittest.TestCase):
+    """Um grafo pode ter centenas de nós e ser, na prática, uma pessoa falando.
+
+    No grafo de respostas da base histórica, UMA conta aparecia em 15 das 20
+    arestas mais pesadas. Sem esse número na tela, a métrica de rede sai
+    parecendo achado coletivo quando é biografia de uma conta.
+    """
+
+    def test_detecta_voz_unica(self):
+        conc = graph.weight_concentration(single_voice_graph())
+        self.assertGreater(conc["top1"], graph.CONCENTRATION_ALERT)
+        self.assertGreater(conc["top1"], 0.5, "o dominante deveria saltar")
+
+    def test_grafo_distribuido_nao_dispara(self):
+        """O alarme tem de ficar quieto quando não há dominante — senão vira
+        ruído e ninguém olha mais para ele."""
+        g = hub_audience_graph([1000, 900, 800, 700, 600])
+        self.assertLess(graph.weight_concentration(g)["top1"],
+                        graph.CONCENTRATION_ALERT)
+
+    def test_grafo_vazio_nao_quebra(self):
+        import igraph
+        vazio = igraph.Graph(directed=True)
+        vazio.add_vertices(3)
+        self.assertEqual(graph.weight_concentration(vazio)["top1"], 0.0)
+
+    def test_analyze_devolve_a_concentracao(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "c.db")
+            db.migrate(conn, ROOT / "migrations")
+            events, _ = planted_communities(n_communities=3, per_community=8)
+            ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
+            window = graph.windows_present(conn)[0]
+            graph.aggregate_window(conn, window)
+            r = graph.analyze_window(conn, window, view="amp")
+            conn.close()
+        self.assertIn("concentracao", r)
+        self.assertGreaterEqual(r["concentracao"]["top1"], 0.0)
+        self.assertGreaterEqual(r["concentracao"]["topn"], r["concentracao"]["top1"])
 
 
 class TestRelabel(unittest.TestCase):

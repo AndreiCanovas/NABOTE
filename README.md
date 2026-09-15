@@ -214,6 +214,20 @@ embaralhado, uma partição com E-I −1,0000 exato e desvio 0,00000. O nulo sat
 o z ou não existe ou explode. Também não serviu o excesso analítico sob modelo
 de configuração: ele troca a correlação de −0,49 por +1,00.
 
+#### Dois números que precisam aparecer antes da leitura
+
+**Concentração.** Um grafo pode ter centenas de nós e ser, na prática, uma
+pessoa falando. No grafo de respostas da base histórica, **uma conta apareceu em
+15 das 20 arestas mais pesadas**. Métrica de rede calculada ali descreve aquela
+conta, não a rede — e sai parecendo achado coletivo. `analyze` avisa quando um
+ator concentra 5% ou mais do peso de saída.
+
+**In-degree junto do PageRank.** PageRank é herdado: quem é repostado por um hub
+recebe quase todo o rank dele. Num grafo fragmentado isso põe contas de
+in-degree 1 acima de contas com dezenas de arestas — aconteceu, seis de uma vez.
+`dump --min-degree G` restringe a lista de atores a quem tem in-degree ponderado
+≥ G, para o ranking poder ser lido como ranking.
+
 #### Comparar visões: importar a partição, nunca recalcular
 
 `amp` e `reply` são grafos diferentes. Rodar o Leiden em cada um produz
@@ -293,7 +307,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-153 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+158 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num
