@@ -102,6 +102,26 @@ def windows_present(conn: sqlite3.Connection) -> list[str]:
     return sorted({window_start_for(r["occurred_at"]) for r in rows})
 
 
+TOPIC_PREFIX = "topic:"
+
+
+def topics_in_window(conn: sqlite3.Connection, window_start: str) -> list[str]:
+    """Rótulos de pauta presentes na janela, do mais volumoso para o menos.
+
+    Nesta base a pauta é o Trending Topic que originou a coleta, guardado em
+    `collection_run.campaign_label`. Em produção virá do agrupamento de texto;
+    a consulta muda, a gramática de escopo não.
+    """
+    end = (datetime.fromisoformat(window_start) + timedelta(days=7)).date().isoformat()
+    return [r["t"] for r in conn.execute(
+        """
+        SELECT cr.campaign_label AS t, COUNT(*) AS n
+        FROM post p JOIN collection_run cr ON cr.run_id = p.run_id
+        WHERE p.created_at >= ? AND p.created_at < ? AND cr.campaign_label IS NOT NULL
+        GROUP BY cr.campaign_label ORDER BY n DESC
+        """, (window_start, end))]
+
+
 def aggregate_window(
     conn: sqlite3.Connection, window_start: str, scope: str = "all"
 ) -> int:
@@ -109,21 +129,38 @@ def aggregate_window(
 
     Recomputa a janela inteira: `interaction` é derivada e a agregação também,
     então reprocessar é sempre seguro — princípio 2 do schema.
+
+    Escopo `topic:<rótulo>` RECORTA de verdade: só entram as interações cujo post
+    veio de uma coleta com aquele rótulo. Antes desta versão o escopo só trocava
+    a etiqueta e gravava o grafo inteiro — um "recorte temático" que era o grafo
+    completo com outro nome, e toda métrica calculada em cima descreveria a rede
+    toda enquanto dizia descrever uma pauta.
     """
     end = (datetime.fromisoformat(window_start) + timedelta(days=7)).date().isoformat()
     conn.execute(
         "DELETE FROM edge_window WHERE window_start = ? AND scope = ?",
         (window_start, scope),
     )
+
+    if scope.startswith(TOPIC_PREFIX):
+        recorte = ("""
+            JOIN post p ON p.post_id = i.post_id
+            JOIN collection_run cr ON cr.run_id = p.run_id
+        """, "AND cr.campaign_label = ?")
+        valores = (window_start, scope, window_start, end, scope[len(TOPIC_PREFIX):])
+    else:
+        recorte = ("", "")
+        valores = (window_start, scope, window_start, end)
+
     cur = conn.execute(
-        """
+        f"""
         INSERT INTO edge_window (window_start, scope, src_actor_id, dst_actor_id, kind, weight)
-        SELECT ?, ?, src_actor_id, dst_actor_id, kind, COUNT(*) * 1.0
-        FROM interaction
-        WHERE occurred_at >= ? AND occurred_at < ?
-        GROUP BY src_actor_id, dst_actor_id, kind
+        SELECT ?, ?, i.src_actor_id, i.dst_actor_id, i.kind, COUNT(*) * 1.0
+        FROM interaction i {recorte[0]}
+        WHERE i.occurred_at >= ? AND i.occurred_at < ? {recorte[1]}
+        GROUP BY i.src_actor_id, i.dst_actor_id, i.kind
         """,
-        (window_start, scope, window_start, end),
+        valores,
     )
     return cur.rowcount
 

@@ -283,6 +283,51 @@ def cmd_compare(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_radar(args: argparse.Namespace) -> int:
+    """Os números do Radar de Pautas de uma ou mais janelas.
+
+    Sai em JSON de propósito: é o insumo de um relatório, não uma leitura de
+    terminal, e reunir estes recortes à mão toda semana é como o relatório
+    deixaria de ser recorrente.
+    """
+    from . import radar as radar_mod
+
+    conn = db.connect(args.db)
+    try:
+        _avisa_migracao(conn)
+        windows = _windows(conn, args)
+        if not windows:
+            print("nada a reportar.", file=sys.stderr)
+            return 1
+
+        base = args.base or f"{args.view}:core"
+        saida = []
+        for window in windows:
+            n = conn.execute(
+                "SELECT COUNT(*) AS n FROM community WHERE window_start=? AND scope=?",
+                (window, base)).fetchone()["n"]
+            if not n:
+                print(f"{window}: sem análise em scope={base}. "
+                      f"Rode `analyze --view {args.view} --core`.", file=sys.stderr)
+                continue
+            saida.append(radar_mod.snapshot(conn, window, view=args.view,
+                                            base_scope=base))
+        if not saida:
+            return 1
+
+        texto = json.dumps(saida, ensure_ascii=False,
+                           indent=None if args.compact else 2)
+        if args.out:
+            Path(args.out).write_text(texto + "\n", encoding="utf-8")
+            print(f"{args.out}  {len(saida)} janela(s), "
+                  f"{sum(len(j['pautas']) for j in saida)} pautas")
+        else:
+            print(texto)
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_runs(args: argparse.Namespace) -> int:
     """De onde veio cada aresta do grafo.
 
@@ -440,7 +485,17 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
             return 1
         for window in windows:
             n = graph.aggregate_window(conn, window, scope=args.scope)
-            print(f"{window}  {n:>6} arestas agregadas  (scope={args.scope})")
+            print(f"{window}  {n:>7,} arestas agregadas  (scope={args.scope})"
+                  .replace(",", "."))
+
+            if not args.by_topic:
+                continue
+            # Um escopo por pauta, ao lado do escopo cheio. É o que permite
+            # perguntar "quem é central NESTA pauta" em vez de "no grafo".
+            for topico in graph.topics_in_window(conn, window):
+                escopo = f"{graph.TOPIC_PREFIX}{topico}"
+                n = graph.aggregate_window(conn, window, scope=escopo)
+                print(f"{'':12}  {n:>7,} arestas  {escopo}".replace(",", "."))
         return 0
     finally:
         conn.close()
@@ -773,7 +828,8 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                               "kind": args.kind, "campaign": args.campaign,
                               "max_events": args.max_events, "max_seconds": args.max_seconds,
                               "author_tier": "A", "no_resume": False}),
-        ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all"}),
+        ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all",
+                                      "by_topic": False}),
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
                                   "view": args.view, "core": False,
                                   "partition": None}),
@@ -1184,6 +1240,13 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--out", default="export", metavar="DIR",
                     help="diretório de saída (padrão: export/)")
 
+    rd = _janela(sub.add_parser("radar", help="números do Radar de Pautas, em JSON"),
+                 com_view=True)
+    rd.add_argument("--base", metavar="ESCOPO",
+                    help="escopo das comunidades de referência (padrão: <visão>:core)")
+    rd.add_argument("--out", metavar="ARQUIVO", help="grava em arquivo em vez da tela")
+    rd.add_argument("--compact", action="store_true", help="JSON numa linha só")
+
     cp = sub.add_parser("compare", help="duas análises lado a lado")
     cp.add_argument("a", metavar="JANELA:ESCOPO",
                     help="ex.: 2023-01-23:amp:core")
@@ -1196,7 +1259,10 @@ def build_parser() -> argparse.ArgumentParser:
     runs.add_argument("--top", type=int, default=10,
                       help="termos por janela (padrão: 10)")
 
-    _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
+    ag = _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
+    ag.add_argument("--by-topic", action="store_true",
+                    help="agrega também um escopo por pauta (topic:<rótulo>), "
+                         "recortando as interações àquela coleta")
     _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
             com_view=True, com_core=True)
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
@@ -1265,7 +1331,7 @@ def main(argv: list[str] | None = None) -> int:
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
             "themes": cmd_themes, "export": cmd_export,
-            "compare": cmd_compare,
+            "compare": cmd_compare, "radar": cmd_radar,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)

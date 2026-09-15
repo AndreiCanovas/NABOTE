@@ -336,6 +336,27 @@ em modo editável: `pip install -e .` (aí o comando `nabote` fica disponível).
 
 O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 
+### Recorte por pauta (níveis 1 e 2)
+
+```bash
+nabote aggregate --all --by-topic          # um escopo por pauta, ao lado do cheio
+nabote analyze --all --view amp --scope topic:Yanomami
+nabote radar --all --view amp --out radar.json
+```
+
+`--by-topic` materializa `topic:<rótulo>` recortando as interações àquela coleta.
+Isso é o que permite perguntar **quem é central NESTA pauta** em vez de "no
+grafo" — e o mesmo perfil aparece em posições muito diferentes conforme a pauta,
+que é justamente o comportamento que uma métrica global esconderia.
+
+O escopo de pauta antes não recortava nada: gravava o grafo inteiro sob o rótulo
+da pauta. Toda métrica calculada ali descreveria a rede toda enquanto dizia
+descrever uma pauta.
+
+`radar` reúne num JSON só o que o relatório recorrente pede: volume, autores e
+concentração por pauta, por quantas comunidades ela circula e qual domina, os
+atores centrais dentro dela, e as comunidades com fatia de volume e pautas.
+
 ### Comparar dois recortes
 
 ```bash
@@ -403,7 +424,7 @@ não leu a conversa, e número sem ressalva vira slide.
 python3 -m unittest discover -s tests
 ```
 
-209 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+221 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num
