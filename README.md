@@ -176,6 +176,42 @@ quer todas. A cauda escondida vira uma linha de resumo, para você nunca
 confundir "filtrei" com "não existe", e o `dump` abre com um histograma de
 tamanhos — é a linha que responde "isto é uma rede ou uma pilha de cacos?".
 
+#### E-I sozinho não é comparável
+
+O E-I anda junto com o **tamanho** da comunidade. No dado real da base histórica
+do X, tamanho e E-I correlacionam −0,73 *dentro de uma única janela* — ou seja,
+nem é efeito da densidade da coleta.
+
+O mecanismo é exato e não tem nada de sutil. A comunidade típica é a audiência
+de um hub: toda folha reposta só o hub, então tem E-I −1; a única contribuição
+externa, a do hub, é diluída por 1/tamanho. Duas estrelas com o **mesmo**
+comportamento, hub com três arestas para fora:
+
+```
+ 10 folhas  →  E-I -0,958
+500 folhas  →  E-I -1,000
+```
+
+A estrela grande parece mais fechada sem ninguém ter agido diferente.
+
+Por isso `analyze` roda um **modelo nulo**: embaralha as arestas preservando o
+grau de cada nó, roda o Leiden de novo no grafo embaralhado e compara cada
+comunidade observada com as comunidades nulas **de tamanho parecido**. O
+resultado é `ei_z`, gravado junto do `ei_mean` e mostrado por `dump` e `themes`:
+
+```
+z ≈ 0    fechamento igual ao que o acaso produz nesse tamanho — não há achado
+z ≪ 0    fechada além do que tamanho e graus explicam — câmara de eco de fato
+```
+
+Custa ~17s para 20 rodadas num grafo de 68 mil nós. `analyze --null 0` desliga e
+deixa as colunas nulas.
+
+Refazer a detecção no grafo embaralhado é o detalhe que faz o nulo funcionar.
+Manter a partição original não serve: ela foi ajustada àquele grafo e vence
+qualquer embaralhamento dele por construção — na primeira versão, um grafo sem
+estrutura nenhuma saía com z −9, parecendo achado.
+
 #### O número da comunidade
 
 `#0` é sempre a **maior** comunidade da janela, `#1` a segunda, e assim por
@@ -202,7 +238,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-135 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+142 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

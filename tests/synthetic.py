@@ -141,6 +141,28 @@ def ambiguous_graph(seed: int = 3, blocks: int = 12, per_block: int = 10,
     return g
 
 
+def block_graph(sizes: list[int], p_in: float = 0.5, p_out: float = 0.004,
+                seed: int = 2):
+    """Grafo de blocos densos com TAMANHOS desiguais, determinístico.
+
+    Serve para checar o pareamento por tamanho do modelo nulo: com blocos de 100,
+    30 e 10 o nulo tem de dar valores diferentes para cada faixa, porque o
+    próprio acaso produz E-I diferente conforme o tamanho.
+    """
+    import igraph
+
+    rng = random.Random(seed)
+    rotulos = [b for b, t in enumerate(sizes) for _ in range(t)]
+    n = len(rotulos)
+    edges = [(i, j) for i in range(n) for j in range(i + 1, n)
+             if rng.random() < (p_in if rotulos[i] == rotulos[j] else p_out)]
+    g = igraph.Graph(directed=True)
+    g.add_vertices(n)
+    g.add_edges(edges)
+    g.es["weight"] = [1.0] * len(edges)
+    return g
+
+
 def write_jsonl(events: list[dict[str, Any]], path) -> None:
     import json
     from pathlib import Path

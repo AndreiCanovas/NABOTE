@@ -227,7 +227,7 @@ def cmd_themes(args: argparse.Namespace) -> int:
 
         for window in windows:
             todas = conn.execute(
-                "SELECT community_id, size, ei_mean FROM community "
+                "SELECT community_id, size, ei_mean, ei_z FROM community "
                 "WHERE window_start=? AND scope=? ORDER BY size DESC",
                 (window, scope)).fetchall()
             if not todas:
@@ -275,6 +275,8 @@ def cmd_themes(args: argparse.Namespace) -> int:
             print(f"\njanela {window}   visão {scope}")
             for c in comunidades:
                 ei = f"{c['ei_mean']:+.2f}" if c["ei_mean"] is not None else "  -  "
+                if c["ei_z"] is not None:
+                    ei += f" (z {c['ei_z']:+.1f})"
                 lista = sorted(termos.get(c["community_id"], []), key=lambda t: -t[1])
                 total = sum(n for _, n in lista)
                 print(f"\n  #{c['community_id']:<4} {c['size']:>5} atores   "
@@ -316,7 +318,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             print("nenhuma interação no banco. Rode `fetch` antes.", file=sys.stderr)
             return 1
         for window in windows:
-            r = graph.analyze_window(conn, window, view=args.view, edge_scope=args.scope)
+            r = graph.analyze_window(conn, window, view=args.view,
+                                     edge_scope=args.scope, null_trials=args.null)
             if not r["nodes"]:
                 print(f"{window}  vazio para a visão {args.view}")
                 continue
@@ -409,7 +412,7 @@ def cmd_dump(args: argparse.Namespace) -> int:
                   f"{r['pr']:>10.4f}{r['ind']:>9.1f}{r['ei']:>8.2f}")
 
         todas = conn.execute(
-            "SELECT community_id, size, ei_mean FROM community "
+            "SELECT community_id, size, ei_mean, ei_z FROM community "
             "WHERE window_start=? AND scope=? ORDER BY size DESC",
             (window, scope)).fetchall()
         tamanhos = [r["size"] for r in todas]
@@ -426,9 +429,12 @@ def cmd_dump(args: argparse.Namespace) -> int:
         print("  " + _distribuicao(tamanhos))
         for r in mostradas:
             ei = f"{r['ei_mean']:+.2f}" if r["ei_mean"] is not None else "  -  "
+            # O z é o número que se pode comparar entre comunidades; o E-I cru
+            # anda junto com o tamanho e engana quem compara direto.
+            z = f"  z {r['ei_z']:+6.1f}" if r["ei_z"] is not None else ""
             nota = "  (E-I mecânico)" if r["size"] <= graph.TRIVIAL_COMPONENT else ""
             print(f"  #{r['community_id']:<4} {r['size']:>5} atores   "
-                  f"E-I médio {ei}{nota}")
+                  f"E-I médio {ei}{z}{nota}")
 
         cauda = todas[len(mostradas):]
         if cauda:
@@ -522,7 +528,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                               "author_tier": "A", "no_resume": False}),
         ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all"}),
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
-                                  "view": args.view}),
+                                  "view": args.view, "null": args.null}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
                             "min_community": 1, "community": None,
                             "view": args.view, "top": args.top}),
@@ -774,7 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="termos por janela (padrão: 10)")
 
     _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
-    _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"), com_view=True)
+    an = _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
+                 com_view=True)
+    an.add_argument("--null", type=int, default=graph.NULL_TRIALS, metavar="N",
+                    help="rodadas do modelo nulo do E-I; 0 desliga. Sem ele o "
+                         "E-I não é comparável entre comunidades de tamanhos "
+                         f"diferentes (padrão: {graph.NULL_TRIALS})")
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
@@ -816,6 +827,7 @@ def build_parser() -> argparse.ArgumentParser:
     cycle.add_argument("--max-seconds", type=float, default=180.0,
                        help="padrão 180s — um ciclo de coleta tem fim")
     cycle.add_argument("--view", default=graph.DEFAULT_VIEW, choices=sorted(graph.VIEWS))
+    cycle.add_argument("--null", type=int, default=graph.NULL_TRIALS)
     cycle.add_argument("--top", type=int, default=15)
     return parser
 

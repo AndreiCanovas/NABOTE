@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from nabote import db, graph, ingest  # noqa: E402
 from synthetic import (  # noqa: E402
-    ListSource, ambiguous_graph, did, planted_communities, scattered_dyads)
+    ListSource, ambiguous_graph, block_graph, did, planted_communities,
+    scattered_dyads)
 
 
 class TestWindow(unittest.TestCase):
@@ -477,6 +478,149 @@ class TestCursorPorFonte(unittest.TestCase):
 
         self.assertEqual(engolidos, len(tardios), "os eventos antigos deveriam ter sumido")
         self.assertGreater(completos, engolidos, "com nome próprio, entram todos")
+
+
+class TestModeloNulo(unittest.TestCase):
+    """O E-I anda junto com o TAMANHO da comunidade.
+
+    Comunidade maior captura mais aresta dentro de si por combinatória e parece
+    mais fechada sem ninguém ter agido diferente — no dado real, tamanho e E-I
+    correlacionam −0,73 dentro de uma única janela. O `z` é o fechamento que
+    sobra depois de descontar o que tamanho e graus já explicam.
+    """
+
+    TRIALS = 10
+
+    def _zs(self, g) -> list[float]:
+        membership = graph.detect_communities(g)
+        observado = graph.community_ei(g, membership)
+        nulo = graph.ei_null_model(g, membership, trials=self.TRIALS)
+        return [(observado[c] - nulo[c][0]) / nulo[c][1]
+                for c in sorted(observado) if c in nulo and nulo[c][1]]
+
+    def _aleatorio(self, n=120, m=365):
+        import igraph
+        random.seed(5)
+        igraph.set_random_number_generator(random.Random(5))
+        g = igraph.Graph.Erdos_Renyi(n=n, m=m, directed=True)
+        g.es["weight"] = [1.0] * g.ecount()
+        igraph.set_random_number_generator(random)
+        return g
+
+    def test_estrutura_real_fica_muito_abaixo_do_nulo(self):
+        zs = self._zs(ambiguous_graph(p_in=0.45, p_out=0.01))
+        self.assertTrue(zs, "sem comunidade nula comparável")
+        self.assertLess(sum(zs) / len(zs), -2.0)
+
+    def test_grafo_aleatorio_nao_vira_camara_de_eco(self):
+        """O teste que derrubou o primeiro modelo nulo. Embaralhar as arestas e
+        MANTER a partição não serve: a partição foi ajustada àquele grafo, então
+        vence qualquer embaralhamento dele por construção — e um grafo sem
+        estrutura nenhuma saía com z −9, parecendo achado. O nulo precisa refazer
+        também a detecção."""
+        zs = self._zs(self._aleatorio())
+        self.assertTrue(zs, "sem comunidade nula comparável")
+        self.assertGreater(sum(zs) / len(zs), -2.0)
+
+    def test_ei_cru_confunde_tamanho_com_fechamento(self):
+        """O motivo exato de o modelo nulo existir, sem aleatoriedade nenhuma.
+
+        Duas estrelas com o MESMO comportamento — um hub com exatamente três
+        arestas para fora — e tamanhos diferentes. Toda folha tem E-I −1 porque
+        só reposta o hub, e a única contribuição externa, a do hub, é diluída
+        por 1/tamanho. A estrela grande sai mais "fechada" sem ninguém ter agido
+        de modo diferente.
+
+        É esta a estrutura do dado real: comunidade = audiência de um hub. Por
+        isso tamanho e E-I correlacionam −0,73 lá.
+        """
+        import igraph
+
+        def estrela(folhas: int, externas: int = 3) -> float:
+            arestas = ([(i + 1, 0) for i in range(folhas)]
+                       + [(0, folhas + 1 + j) for j in range(externas)])
+            g = igraph.Graph(directed=True)
+            g.add_vertices(folhas + 1 + externas)
+            g.add_edges(arestas)
+            g.es["weight"] = [1.0] * len(arestas)
+            membership = [0] * (folhas + 1) + [1] * externas
+            return graph.community_ei(g, membership)[0]
+
+        pequena, grande = estrela(10), estrela(500)
+        self.assertAlmostEqual(pequena, -0.9580, places=3)
+        self.assertAlmostEqual(grande, -1.0000, places=3)
+        self.assertLess(grande, pequena, "a estrela grande parece mais fechada")
+        # a diferença é grande o bastante para ser lida como achado
+        self.assertGreater(pequena - grande, 0.04)
+
+    def test_nulo_e_pareado_por_tamanho(self):
+        """Comunidade de 50 não se compara com nula de 10.
+
+        O próprio acaso produz E-I diferente conforme o tamanho — é esse o
+        confundimento. Se o nulo juntasse todas as comunidades nulas num balaio
+        só, cada comunidade observada seria comparada com a média de tamanhos
+        que não são o dela, e o z herdaria de volta o viés que veio corrigir.
+        """
+        g = block_graph([100, 30, 10])
+        membership = graph.detect_communities(g)
+        tamanhos: dict[int, int] = {}
+        for c in membership:
+            tamanhos[c] = tamanhos.get(c, 0) + 1
+        nulo = graph.ei_null_model(g, membership, trials=self.TRIALS)
+
+        comparados = {c: (tamanhos[c], nulo[c][0]) for c in nulo}
+        self.assertGreaterEqual(len(comparados), 2, "nulas demais foram descartadas")
+        medias = {round(m, 4) for _, m in comparados.values()}
+        self.assertGreater(len(medias), 1,
+                           "todas as comunidades receberam o MESMO nulo: "
+                           "o pareamento por tamanho não está valendo")
+
+        # e o nulo tem de ser monótono no tamanho: maior, mais fechado
+        ordenado = sorted(comparados.values())
+        self.assertEqual([m for _, m in ordenado],
+                         sorted((m for _, m in ordenado), reverse=True),
+                         "nulo deveria cair conforme o tamanho sobe")
+
+    def test_grava_z_na_tabela_community(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "z.db")
+            db.migrate(conn, ROOT / "migrations")
+            events, _ = planted_communities(n_communities=4, per_community=12)
+            ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
+            window = graph.windows_present(conn)[0]
+            graph.aggregate_window(conn, window)
+            graph.analyze_window(conn, window, view="amp", null_trials=5)
+            linhas = conn.execute(
+                "SELECT ei_mean, ei_null, ei_z, null_trials FROM community "
+                "WHERE scope='amp'").fetchall()
+            conn.close()
+        self.assertTrue(linhas)
+        gravadas = [r for r in linhas if r["ei_z"] is not None]
+        self.assertTrue(gravadas, "nenhum z gravado")
+        for r in gravadas:
+            self.assertEqual(r["null_trials"], 5)
+            self.assertIsNotNone(r["ei_null"])
+
+    def test_null_zero_desliga_sem_quebrar(self):
+        """Desligar precisa deixar as colunas NULAS, não gravar zero: zero é um
+        z legítimo e significa 'igual ao acaso'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "z0.db")
+            db.migrate(conn, ROOT / "migrations")
+            events, _ = planted_communities(n_communities=3, per_community=8)
+            ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
+            window = graph.windows_present(conn)[0]
+            graph.aggregate_window(conn, window)
+            graph.analyze_window(conn, window, view="amp", null_trials=0)
+            linhas = conn.execute(
+                "SELECT ei_mean, ei_null, ei_z FROM community WHERE scope='amp'"
+            ).fetchall()
+            conn.close()
+        self.assertTrue(linhas)
+        for r in linhas:
+            self.assertIsNotNone(r["ei_mean"])
+            self.assertIsNone(r["ei_null"])
+            self.assertIsNone(r["ei_z"])
 
 
 class TestRelabel(unittest.TestCase):
