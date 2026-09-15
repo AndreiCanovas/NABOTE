@@ -92,7 +92,7 @@ class TestFiltroDeComunidade(DumpTestCase):
         """O resumo tem de fechar com a contagem: mostradas + cauda = todas."""
         saida = self.dump(min_community=5, top=50)
         total = int(saida.split("comunidades  (")[1].split(" no total")[0])
-        mostradas = saida.count(" atores   E-I médio ")
+        mostradas = saida.count(" atores   cru ")
         cauda = int(saida.split("… + ")[1].split(" comunidades")[0])
         self.assertEqual(mostradas + cauda, total)
 
@@ -101,7 +101,7 @@ class TestFiltroDeComunidade(DumpTestCase):
         arestas, nunca o corte explícito de comunidade — filtro que engana
         silenciosamente é pior que filtro nenhum."""
         saida = self.dump(min_community=4, top=1)
-        listadas = saida.count(" atores   E-I médio ")
+        listadas = saida.count(" atores   cru ")
         self.assertEqual(listadas, 3, "as 3 comunidades plantadas têm 8 atores cada")
 
     def test_distribuicao_separa_rede_de_cacos(self):
@@ -328,23 +328,21 @@ class TestAnalyzeReporta(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def analyze(self, null: int) -> str:
+    def analyze(self, null: int = 0) -> str:
         args = argparse.Namespace(db=str(self.path), window=None, all=True,
-                                  scope="all", view="amp", null=null)
+                                  scope="all", view="amp")
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             self.assertEqual(cli.cmd_analyze(args), 0)
         return buffer.getvalue()
 
-    def test_diz_que_o_nulo_rodou_e_em_que_faixa(self):
-        saida = self.analyze(null=5)
-        self.assertIn("modelo nulo (5x)", saida)
-        self.assertIn("z ≤ −2", saida)
-
-    def test_diz_em_voz_alta_quando_esta_desligado(self):
-        saida = self.analyze(null=0)
-        self.assertIn("DESLIGADO", saida)
-        self.assertIn("não é comparável", saida)
+    def test_diz_quantos_atores_sustentam_o_ei(self):
+        """Comunidade onde quase ninguém teve escolha tem E-I frágil. Se o
+        comando não disser quantos atores entraram na conta, ninguém sabe se o
+        número vale."""
+        saida = self.analyze()
+        self.assertIn("E-I com escolha:", saida)
+        self.assertIn("amplificaram mais de uma vez", saida)
 
 
 class TestMigracaoPendente(unittest.TestCase):

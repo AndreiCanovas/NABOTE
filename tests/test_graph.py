@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from nabote import db, graph, ingest  # noqa: E402
 from synthetic import (  # noqa: E402
-    ListSource, ambiguous_graph, block_graph, did, planted_communities,
-    scattered_dyads)
+    ListSource, ambiguous_graph, block_graph, did, hub_audience_graph,
+    planted_communities, scattered_dyads)
 
 
 class TestWindow(unittest.TestCase):
@@ -480,147 +480,83 @@ class TestCursorPorFonte(unittest.TestCase):
         self.assertGreater(completos, engolidos, "com nome próprio, entram todos")
 
 
-class TestModeloNulo(unittest.TestCase):
-    """O E-I anda junto com o TAMANHO da comunidade.
+def _corr(x: list[float], y: list[float]) -> float:
+    n = len(x)
+    mx, my = sum(x) / n, sum(y) / n
+    sx = sum((a - mx) ** 2 for a in x) ** 0.5
+    sy = sum((b - my) ** 2 for b in y) ** 0.5
+    return sum((a - mx) * (b - my) for a, b in zip(x, y)) / (sx * sy) if sx and sy else 0.0
 
-    Comunidade maior captura mais aresta dentro de si por combinatória e parece
-    mais fechada sem ninguém ter agido diferente — no dado real, tamanho e E-I
-    correlacionam −0,73 dentro de uma única janela. O `z` é o fechamento que
-    sobra depois de descontar o que tamanho e graus já explicam.
+
+class TestEICompravel(unittest.TestCase):
+    """O E-I só é comparável entre comunidades se restrito a quem teve ESCOLHA.
+
+    Numa rede de audiência-em-torno-de-hub a maioria amplificou uma vez só:
+    grau 1, E-I −1 por aritmética. Essa gente não escolheu ficar dentro do
+    grupo — não houve segunda chance de atravessar. A média sobre todo mundo
+    tende a −1 conforme a audiência cresce, e foi daí que veio a correlação de
+    −0,73 entre tamanho e E-I no dado real.
     """
 
-    TRIALS = 10
+    TAMANHOS = [4000, 3000, 2000, 1500, 1000, 700, 500, 300, 200, 100]
 
-    def _zs(self, g) -> list[float]:
-        membership = graph.detect_communities(g)
-        observado = graph.community_ei(g, membership)
-        nulo = graph.ei_null_model(g, membership, trials=self.TRIALS)
-        return [(observado[c] - nulo[c][0]) / nulo[c][1]
-                for c in sorted(observado) if c in nulo and nulo[c][1]]
+    def setUp(self):
+        self.g = hub_audience_graph(self.TAMANHOS)
+        self.membership = graph.detect_communities(self.g)
+        self.tam: dict[int, int] = {}
+        for c in self.membership:
+            self.tam[c] = self.tam.get(c, 0) + 1
 
-    def _aleatorio(self, n=120, m=365):
-        import igraph
-        random.seed(5)
-        igraph.set_random_number_generator(random.Random(5))
-        g = igraph.Graph.Erdos_Renyi(n=n, m=m, directed=True)
-        g.es["weight"] = [1.0] * g.ecount()
-        igraph.set_random_number_generator(random)
-        return g
-
-    def test_estrutura_real_fica_muito_abaixo_do_nulo(self):
-        zs = self._zs(ambiguous_graph(p_in=0.45, p_out=0.01))
-        self.assertTrue(zs, "sem comunidade nula comparável")
-        self.assertLess(sum(zs) / len(zs), -2.0)
-
-    def test_grafo_aleatorio_nao_vira_camara_de_eco(self):
-        """O teste que derrubou o primeiro modelo nulo. Embaralhar as arestas e
-        MANTER a partição não serve: a partição foi ajustada àquele grafo, então
-        vence qualquer embaralhamento dele por construção — e um grafo sem
-        estrutura nenhuma saía com z −9, parecendo achado. O nulo precisa refazer
-        também a detecção."""
-        zs = self._zs(self._aleatorio())
-        self.assertTrue(zs, "sem comunidade nula comparável")
-        self.assertGreater(sum(zs) / len(zs), -2.0)
+    def _serie(self, min_strength):
+        valores = graph.community_ei(self.g, self.membership,
+                                     min_strength=min_strength)
+        ordem = [c for c in sorted(self.tam, key=lambda c: -self.tam[c])
+                 if c in valores]
+        return ([self.tam[c] for c in ordem], [valores[c][0] for c in ordem])
 
     def test_ei_cru_confunde_tamanho_com_fechamento(self):
-        """O motivo exato de o modelo nulo existir, sem aleatoriedade nenhuma.
+        """O problema, medido. Comportamento relativo idêntico em todas as
+        audiências, e mesmo assim o E-I cru anda com o tamanho — e satura em
+        −1,00, onde nenhuma diferença é mais visível."""
+        tamanhos, valores = self._serie(0.0)
+        self.assertLess(_corr(tamanhos, valores), -0.4)
+        self.assertLess(max(valores), -0.99, "o E-I cru satura perto de −1")
 
-        Duas estrelas com o MESMO comportamento — um hub com exatamente três
-        arestas para fora — e tamanhos diferentes. Toda folha tem E-I −1 porque
-        só reposta o hub, e a única contribuição externa, a do hub, é diluída
-        por 1/tamanho. A estrela grande sai mais "fechada" sem ninguém ter agido
-        de modo diferente.
+    def test_com_escolha_deixa_de_seguir_o_tamanho(self):
+        tamanhos, valores = self._serie(graph.CHOICE_STRENGTH)
+        self.assertGreater(_corr(tamanhos, valores), -0.4)
+        # e os valores passam a se agrupar, em vez de saturar
+        self.assertLess(max(valores) - min(valores), 0.2)
 
-        É esta a estrutura do dado real: comunidade = audiência de um hub. Por
-        isso tamanho e E-I correlacionam −0,73 lá.
-        """
-        import igraph
+    def test_conta_quantos_atores_sustentam_a_media(self):
+        """Comunidade onde quase ninguém teve escolha tem E-I frágil; o número
+        de atores precisa viajar junto com a média."""
+        valores = graph.community_ei(self.g, self.membership,
+                                     min_strength=graph.CHOICE_STRENGTH)
+        for community, (_, atores) in valores.items():
+            self.assertGreater(atores, 0)
+            self.assertLessEqual(atores, self.tam[community])
 
-        def estrela(folhas: int, externas: int = 3) -> float:
-            arestas = ([(i + 1, 0) for i in range(folhas)]
-                       + [(0, folhas + 1 + j) for j in range(externas)])
-            g = igraph.Graph(directed=True)
-            g.add_vertices(folhas + 1 + externas)
-            g.add_edges(arestas)
-            g.es["weight"] = [1.0] * len(arestas)
-            membership = [0] * (folhas + 1) + [1] * externas
-            return graph.community_ei(g, membership)[0]
-
-        pequena, grande = estrela(10), estrela(500)
-        self.assertAlmostEqual(pequena, -0.9580, places=3)
-        self.assertAlmostEqual(grande, -1.0000, places=3)
-        self.assertLess(grande, pequena, "a estrela grande parece mais fechada")
-        # a diferença é grande o bastante para ser lida como achado
-        self.assertGreater(pequena - grande, 0.04)
-
-    def test_nulo_e_pareado_por_tamanho(self):
-        """Comunidade de 50 não se compara com nula de 10.
-
-        O próprio acaso produz E-I diferente conforme o tamanho — é esse o
-        confundimento. Se o nulo juntasse todas as comunidades nulas num balaio
-        só, cada comunidade observada seria comparada com a média de tamanhos
-        que não são o dela, e o z herdaria de volta o viés que veio corrigir.
-        """
-        g = block_graph([100, 30, 10])
-        membership = graph.detect_communities(g)
-        tamanhos: dict[int, int] = {}
-        for c in membership:
-            tamanhos[c] = tamanhos.get(c, 0) + 1
-        nulo = graph.ei_null_model(g, membership, trials=self.TRIALS)
-
-        comparados = {c: (tamanhos[c], nulo[c][0]) for c in nulo}
-        self.assertGreaterEqual(len(comparados), 2, "nulas demais foram descartadas")
-        medias = {round(m, 4) for _, m in comparados.values()}
-        self.assertGreater(len(medias), 1,
-                           "todas as comunidades receberam o MESMO nulo: "
-                           "o pareamento por tamanho não está valendo")
-
-        # e o nulo tem de ser monótono no tamanho: maior, mais fechado
-        ordenado = sorted(comparados.values())
-        self.assertEqual([m for _, m in ordenado],
-                         sorted((m for _, m in ordenado), reverse=True),
-                         "nulo deveria cair conforme o tamanho sobe")
-
-    def test_grava_z_na_tabela_community(self):
+    def test_grava_as_duas_medidas(self):
         with tempfile.TemporaryDirectory() as tmp:
-            conn = db.connect(Path(tmp) / "z.db")
+            conn = db.connect(Path(tmp) / "e.db")
             db.migrate(conn, ROOT / "migrations")
             events, _ = planted_communities(n_communities=4, per_community=12)
             ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
             window = graph.windows_present(conn)[0]
             graph.aggregate_window(conn, window)
-            graph.analyze_window(conn, window, view="amp", null_trials=5)
+            graph.analyze_window(conn, window, view="amp")
             linhas = conn.execute(
-                "SELECT ei_mean, ei_null, ei_z, null_trials FROM community "
+                "SELECT size, ei_mean, ei_choice, choice_actors FROM community "
                 "WHERE scope='amp'").fetchall()
             conn.close()
         self.assertTrue(linhas)
-        gravadas = [r for r in linhas if r["ei_z"] is not None]
-        self.assertTrue(gravadas, "nenhum z gravado")
-        for r in gravadas:
-            self.assertEqual(r["null_trials"], 5)
-            self.assertIsNotNone(r["ei_null"])
-
-    def test_null_zero_desliga_sem_quebrar(self):
-        """Desligar precisa deixar as colunas NULAS, não gravar zero: zero é um
-        z legítimo e significa 'igual ao acaso'."""
-        with tempfile.TemporaryDirectory() as tmp:
-            conn = db.connect(Path(tmp) / "z0.db")
-            db.migrate(conn, ROOT / "migrations")
-            events, _ = planted_communities(n_communities=3, per_community=8)
-            ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
-            window = graph.windows_present(conn)[0]
-            graph.aggregate_window(conn, window)
-            graph.analyze_window(conn, window, view="amp", null_trials=0)
-            linhas = conn.execute(
-                "SELECT ei_mean, ei_null, ei_z FROM community WHERE scope='amp'"
-            ).fetchall()
-            conn.close()
-        self.assertTrue(linhas)
-        for r in linhas:
+        com_escolha = [r for r in linhas if r["ei_choice"] is not None]
+        self.assertTrue(com_escolha, "nenhuma comunidade gravou ei_choice")
+        for r in com_escolha:
             self.assertIsNotNone(r["ei_mean"])
-            self.assertIsNone(r["ei_null"])
-            self.assertIsNone(r["ei_z"])
+            self.assertGreater(r["choice_actors"], 0)
+            self.assertLessEqual(r["choice_actors"], r["size"])
 
 
 class TestRelabel(unittest.TestCase):

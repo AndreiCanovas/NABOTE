@@ -179,38 +179,40 @@ tamanhos — é a linha que responde "isto é uma rede ou uma pilha de cacos?".
 #### E-I sozinho não é comparável
 
 O E-I anda junto com o **tamanho** da comunidade. No dado real da base histórica
-do X, tamanho e E-I correlacionam −0,73 *dentro de uma única janela* — ou seja,
-nem é efeito da densidade da coleta.
+do X, tamanho e E-I correlacionam −0,73 *dentro de uma única janela* — nem é
+efeito da densidade da coleta.
 
-O mecanismo é exato e não tem nada de sutil. A comunidade típica é a audiência
-de um hub: toda folha reposta só o hub, então tem E-I −1; a única contribuição
-externa, a do hub, é diluída por 1/tamanho. Duas estrelas com o **mesmo**
-comportamento, hub com três arestas para fora:
+A causa não é sutil. A rede é audiência-em-torno-de-hub, e a maioria dos atores
+amplificou **uma vez só**: grau 1, E-I −1 por aritmética. Essa gente não escolheu
+ficar dentro do grupo — não houve segunda oportunidade de atravessar. A média
+sobre todo mundo tende a −1 conforme a audiência cresce, e satura ali, onde
+nenhuma diferença é mais visível.
 
-```
- 10 folhas  →  E-I -0,958
-500 folhas  →  E-I -1,000
-```
+Por isso `analyze` grava duas medidas:
 
-A estrela grande parece mais fechada sem ninguém ter agido diferente.
+| coluna | o que é |
+| --- | --- |
+| `ei_mean` | E-I cru, média sobre todos os atores — **não comparável entre tamanhos** |
+| `ei_choice` | média só entre atores com força ≥ 2, quem teve mais de uma chance de atravessar |
+| `choice_actors` | quantos atores sustentam o `ei_choice` |
 
-Por isso `analyze` roda um **modelo nulo**: embaralha as arestas preservando o
-grau de cada nó, roda o Leiden de novo no grafo embaralhado e compara cada
-comunidade observada com as comunidades nulas **de tamanho parecido**. O
-resultado é `ei_z`, gravado junto do `ei_mean` e mostrado por `dump` e `themes`:
+Com audiências de 100 a 4.000 e comportamento relativo idêntico, a correlação
+com o tamanho cai de −0,63 para −0,21 e os valores se agrupam em torno de −0,82
+em vez de todos virarem −1,00. `tests/synthetic.py:hub_audience_graph` é o banco
+de provas: métrica de fechamento que varia com o tamanho naquele grafo está
+medindo tamanho, não fechamento.
 
-```
-z ≈ 0    fechamento igual ao que o acaso produz nesse tamanho — não há achado
-z ≪ 0    fechada além do que tamanho e graus explicam — câmara de eco de fato
-```
+`choice_actors` viaja junto porque importa: comunidade onde quase ninguém teve
+escolha tem `ei_choice` frágil, e isso precisa ficar visível em vez de virar um
+número bonito sem lastro.
 
-Custa ~17s para 20 rodadas num grafo de 68 mil nós. `analyze --null 0` desliga e
-deixa as colunas nulas.
-
-Refazer a detecção no grafo embaralhado é o detalhe que faz o nulo funcionar.
-Manter a partição original não serve: ela foi ajustada àquele grafo e vence
-qualquer embaralhamento dele por construção — na primeira versão, um grafo sem
-estrutura nenhuma saía com z −9, parecendo achado.
+**O que não funcionou.** A primeira tentativa foi um z-score contra um grafo
+embaralhado (migração 003, revertida pela 004). No dado real ele saiu inútil: z
+de −7,5 a +26,1, e só 38 de 1009 comunidades recebendo valor. A causa é
+estrutural — a rede tem grau médio ~2, e num grafo tão esparso o Leiden acha, no
+embaralhado, uma partição com E-I −1,0000 exato e desvio 0,00000. O nulo satura,
+o z ou não existe ou explode. Também não serviu o excesso analítico sob modelo
+de configuração: ele troca a correlação de −0,49 por +1,00.
 
 #### O número da comunidade
 
@@ -238,7 +240,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-145 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+142 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

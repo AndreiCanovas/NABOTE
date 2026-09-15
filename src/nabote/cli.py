@@ -227,7 +227,7 @@ def cmd_themes(args: argparse.Namespace) -> int:
 
         for window in windows:
             todas = conn.execute(
-                "SELECT community_id, size, ei_mean, ei_z FROM community "
+                "SELECT community_id, size, ei_mean, ei_choice, choice_actors FROM community "
                 "WHERE window_start=? AND scope=? ORDER BY size DESC",
                 (window, scope)).fetchall()
             if not todas:
@@ -275,8 +275,11 @@ def cmd_themes(args: argparse.Namespace) -> int:
             print(f"\njanela {window}   visão {scope}")
             for c in comunidades:
                 ei = f"{c['ei_mean']:+.2f}" if c["ei_mean"] is not None else "  -  "
-                if c["ei_z"] is not None:
-                    ei += f" (z {c['ei_z']:+.1f})"
+                # O E-I cru anda junto com o tamanho; o "com escolha" é o
+                # que se pode comparar entre comunidades.
+                if c["ei_choice"] is not None:
+                    ei = (f"{c['ei_choice']:+.2f} (escolha, n={c['choice_actors']})"
+                          f"   cru {c['ei_mean']:+.2f}")
                 lista = sorted(termos.get(c["community_id"], []), key=lambda t: -t[1])
                 total = sum(n for _, n in lista)
                 print(f"\n  #{c['community_id']:<4} {c['size']:>5} atores   "
@@ -330,7 +333,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             return 1
         for window in windows:
             r = graph.analyze_window(conn, window, view=args.view,
-                                     edge_scope=args.scope, null_trials=args.null)
+                                     edge_scope=args.scope)
             if not r["nodes"]:
                 print(f"{window}  vazio para a visão {args.view}")
                 continue
@@ -343,23 +346,20 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 print(f"{'':12}  ATENÇÃO: menos da metade dos atores está no núcleo. "
                       f"O grafo é uma pilha de cacos, não uma rede.")
 
-            # Sem isto, uma computação de 17s não deixa rastro na tela e não dá
-            # para saber se rodou. Já aconteceu.
-            if not args.null:
-                print(f"{'':12}  modelo nulo DESLIGADO — o E-I não é comparável "
-                      f"entre comunidades de tamanhos diferentes")
-                continue
-            zs = [row["ei_z"] for row in conn.execute(
-                "SELECT ei_z FROM community WHERE window_start=? AND scope=? "
-                "AND ei_z IS NOT NULL", (window, r["scope"]))]
-            if not zs:
-                print(f"{'':12}  modelo nulo: nenhuma comunidade teve nula "
-                      f"comparável (grafo pequeno demais?)")
-                continue
-            fechadas = sum(1 for z in zs if z <= -2)
-            print(f"{'':12}  modelo nulo ({args.null}x): z de {min(zs):+.1f} a "
-                  f"{max(zs):+.1f} em {len(zs)} comunidades · "
-                  f"{fechadas} com z ≤ −2 (fechadas além do tamanho)")
+            # Quantos atores sustentam o E-I comparável. Comunidade onde quase
+            # ninguém teve escolha tem E-I frágil, e isso tem de ficar visível.
+            linha = conn.execute(
+                "SELECT COUNT(*) n, SUM(choice_actors) atores, SUM(size) total "
+                "FROM community WHERE window_start=? AND scope=? "
+                "AND choice_actors > 0", (window, r["scope"])).fetchone()
+            todos = conn.execute(
+                "SELECT SUM(size) total FROM community "
+                "WHERE window_start=? AND scope=?", (window, r["scope"])
+            ).fetchone()["total"] or 1
+            atores = linha["atores"] or 0
+            print(f"{'':12}  E-I com escolha: {atores} atores de {todos} "
+                  f"({atores / todos:.0%}) amplificaram mais de uma vez, "
+                  f"em {linha['n']} comunidades")
         return 0
     finally:
         conn.close()
@@ -441,7 +441,7 @@ def cmd_dump(args: argparse.Namespace) -> int:
                   f"{r['pr']:>10.4f}{r['ind']:>9.1f}{r['ei']:>8.2f}")
 
         todas = conn.execute(
-            "SELECT community_id, size, ei_mean, ei_z FROM community "
+            "SELECT community_id, size, ei_mean, ei_choice, choice_actors FROM community "
             "WHERE window_start=? AND scope=? ORDER BY size DESC",
             (window, scope)).fetchall()
         tamanhos = [r["size"] for r in todas]
@@ -458,12 +458,14 @@ def cmd_dump(args: argparse.Namespace) -> int:
         print("  " + _distribuicao(tamanhos))
         for r in mostradas:
             ei = f"{r['ei_mean']:+.2f}" if r["ei_mean"] is not None else "  -  "
-            # O z é o número que se pode comparar entre comunidades; o E-I cru
-            # anda junto com o tamanho e engana quem compara direto.
-            z = f"  z {r['ei_z']:+6.1f}" if r["ei_z"] is not None else ""
+            # O E-I cru anda junto com o tamanho e engana quem compara
+            # direto; o "com escolha" é o comparável.
+            escolha = ("  escolha " + f"{r['ei_choice']:+.2f}"
+                       + f" (n={r['choice_actors']})"
+                       if r["ei_choice"] is not None else "  escolha    —")
             nota = "  (E-I mecânico)" if r["size"] <= graph.TRIVIAL_COMPONENT else ""
             print(f"  #{r['community_id']:<4} {r['size']:>5} atores   "
-                  f"E-I médio {ei}{z}{nota}")
+                  f"cru {ei}{escolha}{nota}")
 
         cauda = todas[len(mostradas):]
         if cauda:
@@ -557,7 +559,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                               "author_tier": "A", "no_resume": False}),
         ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all"}),
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
-                                  "view": args.view, "null": args.null}),
+                                  "view": args.view}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
                             "min_community": 1, "community": None,
                             "view": args.view, "top": args.top}),
@@ -809,12 +811,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="termos por janela (padrão: 10)")
 
     _janela(sub.add_parser("aggregate", help="interaction → edge_window"))
-    an = _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
-                 com_view=True)
-    an.add_argument("--null", type=int, default=graph.NULL_TRIALS, metavar="N",
-                    help="rodadas do modelo nulo do E-I; 0 desliga. Sem ele o "
-                         "E-I não é comparável entre comunidades de tamanhos "
-                         f"diferentes (padrão: {graph.NULL_TRIALS})")
+    _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
+            com_view=True)
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True)
     d.add_argument("--top", type=int, default=15)
@@ -856,7 +854,6 @@ def build_parser() -> argparse.ArgumentParser:
     cycle.add_argument("--max-seconds", type=float, default=180.0,
                        help="padrão 180s — um ciclo de coleta tem fim")
     cycle.add_argument("--view", default=graph.DEFAULT_VIEW, choices=sorted(graph.VIEWS))
-    cycle.add_argument("--null", type=int, default=graph.NULL_TRIALS)
     cycle.add_argument("--top", type=int, default=15)
     return parser
 

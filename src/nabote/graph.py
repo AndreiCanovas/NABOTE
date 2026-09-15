@@ -52,13 +52,17 @@ LEIDEN_SEED = 20260914
 
 # Rodadas do modelo nulo do E-I. Vinte já estabiliza a média em grafos deste
 # tamanho; o custo é linear e o `analyze --null 0` desliga.
-NULL_TRIALS = 20
-
-# Comparação por faixa de tamanho: uma comunidade só se compara com nulas entre
-# metade e o dobro do seu tamanho. Tamanho é distribuído em ordens de grandeza,
-# então a faixa é multiplicativa, não aditiva.
-SIZE_BAND = 2.0
-MIN_NULL_SAMPLES = 5
+# O E-I só faz sentido para quem teve ESCOLHA.
+#
+# Numa rede de audiência-em-torno-de-hub — que é a forma do dado real — a maior
+# parte dos atores amplificou uma vez só. Grau 1 implica E-I −1 por aritmética:
+# não houve segunda oportunidade de atravessar para outra comunidade. Incluir
+# essa gente faz a média tender a −1 conforme a audiência cresce, e foi daí que
+# veio a correlação de −0,73 entre tamanho e E-I no dado real.
+#
+# Com força ≥ 2 a correlação com tamanho cai de −0,63 para −0,21 em teste com
+# audiências de 100 a 4.000 e comportamento relativo idêntico.
+CHOICE_STRENGTH = 2.0
 
 # Componente com até três atores não é comunidade: é resíduo de amostragem.
 # Uma díade solta tem E-I obrigatoriamente −1 porque não existe aresta externa
@@ -261,92 +265,22 @@ def ei_index(graph: Any, membership: list[int]) -> list[float]:
     return out
 
 
-def community_ei(graph: Any, membership: list[int]) -> dict[int, float]:
-    """E-I médio de cada comunidade."""
+def community_ei(graph: Any, membership: list[int],
+                 min_strength: float = 0.0) -> dict[int, tuple[float, int]]:
+    """E-I médio de cada comunidade. Devolve {comunidade: (media, n_atores)}.
+
+    `min_strength` restringe a média a quem teve ESCOLHA — ver `CHOICE_STRENGTH`.
+    Com 0.0 entra todo mundo, que é o E-I cru e não é comparável entre
+    comunidades de tamanhos diferentes.
+    """
     ei = ei_index(graph, membership)
+    strength = graph.strength(mode="all", weights="weight") if min_strength else None
     soma: dict[int, list[float]] = {}
     for node, community in enumerate(membership):
-        soma.setdefault(int(community), []).append(ei[node])
-    return {c: sum(v) / len(v) for c, v in soma.items()}
-
-
-def ei_null_model(graph: Any, membership: list[int], trials: int = NULL_TRIALS,
-                  seed: int = LEIDEN_SEED) -> dict[int, tuple[float, float]]:
-    """E-I esperado para uma comunidade DAQUELE TAMANHO, achada por acaso.
-
-    O problema que isto resolve: o E-I depende do tamanho da comunidade. Uma
-    comunidade maior captura mais arestas dentro de si por combinatória e parece
-    mais fechada sem ninguém ter se comportado de modo diferente. No dado real,
-    tamanho e E-I correlacionam −0,73 DENTRO de uma única janela — não é efeito
-    da densidade da coleta, é do tamanho. Sem correção, comparar o E-I de duas
-    comunidades compara principalmente o tamanho delas.
-
-    O nulo certo custou duas tentativas. Embaralhar as arestas e MANTER a
-    partição não serve: a partição foi ajustada a este grafo, então vence
-    qualquer embaralhamento dele por construção — um grafo aleatório dava z de
-    −9, quando deveria dar ~0. O nulo tem de refazer também a detecção.
-
-    Então: embaralha preservando o grau de cada nó (modelo de configuração),
-    roda o Leiden de novo no grafo embaralhado e guarda os pares (tamanho, E-I)
-    que aparecem. A comunidade observada é comparada com as comunidades NULAS DE
-    TAMANHO PARECIDO — apples to apples.
-
-    Devolve {comunidade: (media_nula, desvio)}, ausente quando não houve
-    comunidade nula de tamanho comparável.
-
-      z ≈ 0    fechamento igual ao que o acaso produz nesse tamanho: sem achado
-      z ≪ 0    fechada ALÉM do que tamanho e graus explicam: câmara de eco
-
-    Limite conhecido: `rewire` preserva o grau NÃO ponderado e o conjunto de
-    pesos, não a força ponderada de cada nó. Na visão `amp`, onde quase todo
-    peso é repostagem de peso 1, a diferença é pequena.
-    """
-    import random as _random
-
-    if graph.ecount() == 0:
-        return {}
-
-    tamanhos: dict[int, int] = {}
-    for community in membership:
-        tamanhos[int(community)] = tamanhos.get(int(community), 0) + 1
-
-    pesos = list(graph.es["weight"])
-    rng = _random.Random(seed)
-    nulas: list[tuple[int, float]] = []
-    for _ in range(trials):
-        sorteado = graph.copy()
-        with _rng(rng.randrange(2**31)):
-            # 10 trocas por aresta descorrelaciona sem custo absurdo.
-            sorteado.rewire(n=10 * sorteado.ecount(), mode="simple")
-        # `rewire` perde os atributos. Os pesos voltam embaralhados: o nulo
-        # preserva a DISTRIBUIÇÃO de peso, não a associação entre peso e par —
-        # que é justamente o que se quer destruir.
-        embaralhados = pesos[:]
-        rng.shuffle(embaralhados)
-        sorteado.es["weight"] = embaralhados
-
-        nula = detect_communities(sorteado)
-        conta: dict[int, int] = {}
-        for community in nula:
-            conta[community] = conta.get(community, 0) + 1
-        for community, valor in community_ei(sorteado, nula).items():
-            nulas.append((conta[community], valor))
-
-    if not nulas:
-        return {}
-
-    saida: dict[int, tuple[float, float]] = {}
-    for community, tamanho in tamanhos.items():
-        # Faixa multiplicativa: comunidade de 5.000 não se compara com uma de
-        # 3, e tamanho é distribuído em ordens de grandeza, não linearmente.
-        perto = [ei for n, ei in nulas
-                 if tamanho / SIZE_BAND <= n <= tamanho * SIZE_BAND]
-        if len(perto) < MIN_NULL_SAMPLES:
+        if strength is not None and strength[node] < min_strength:
             continue
-        media = sum(perto) / len(perto)
-        variancia = sum((v - media) ** 2 for v in perto) / len(perto)
-        saida[community] = (media, variancia ** 0.5)
-    return saida
+        soma.setdefault(int(community), []).append(ei[node])
+    return {c: (sum(v) / len(v), len(v)) for c, v in soma.items()}
 
 
 def compute_metrics(graph: Any, membership: list[int]) -> dict[str, list[float]]:
@@ -374,7 +308,6 @@ def compute_metrics(graph: Any, membership: list[int]) -> dict[str, list[float]]
 def analyze_window(
     conn: sqlite3.Connection, window_start: str, view: str = DEFAULT_VIEW,
     edge_scope: str = "all", graph_version: int = GRAPH_VERSION,
-    null_trials: int = NULL_TRIALS,
 ) -> dict[str, Any]:
     """Calcula e grava métricas e comunidades de uma janela."""
     scope = view if edge_scope == "all" else f"{view}:{edge_scope}"
@@ -411,20 +344,17 @@ def analyze_window(
     for i, community_id in enumerate(membership):
         sizes.setdefault(int(community_id), []).append(i)
 
-    nulo = ei_null_model(graph, membership, trials=null_trials) if null_trials else {}
+    com_escolha = community_ei(graph, membership, min_strength=CHOICE_STRENGTH)
 
     def _linha(cid: int, members: list[int]) -> tuple:
         media = (sum(ei[i] for i in members) / len(members)) if ei else None
-        esperado, desvio = nulo.get(cid, (None, None))
-        z = None
-        if media is not None and esperado is not None and desvio:
-            z = (media - esperado) / desvio
+        escolha, atores = com_escolha.get(cid, (None, 0))
         return (window_start, scope, cid, graph_version, len(members), media,
-                esperado, z, null_trials if esperado is not None else None)
+                escolha, atores)
 
     conn.executemany(
         "INSERT INTO community (window_start, scope, community_id, graph_version, "
-        "size, ei_mean, ei_null, ei_z, null_trials) VALUES (?,?,?,?,?,?,?,?,?)",
+        "size, ei_mean, ei_choice, choice_actors) VALUES (?,?,?,?,?,?,?,?)",
         [_linha(cid, members) for cid, members in sizes.items()],
     )
 

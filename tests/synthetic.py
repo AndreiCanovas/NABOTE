@@ -163,6 +163,44 @@ def block_graph(sizes: list[int], p_in: float = 0.5, p_out: float = 0.004,
     return g
 
 
+def hub_audience_graph(sizes: list[int], external_fraction: float = 0.05,
+                       seed: int = 3):
+    """Rede de audiência-em-torno-de-hub — a forma do dado real.
+
+    Cada hub tem uma audiência de grau 1 e manda arestas externas PROPORCIONAIS
+    à própria audiência, sorteadas entre os outros hubs com peso pelo tamanho
+    deles. Ou seja: comportamento relativo idêntico, tamanhos muito diferentes.
+
+    É o banco de provas do E-I. Uma métrica de fechamento que varia com o
+    tamanho neste grafo está medindo tamanho, não fechamento.
+    """
+    import igraph
+
+    rng = random.Random(seed)
+    edges: list[tuple[int, int]] = []
+    proximo = 0
+    hubs: list[int] = []
+    tamanho: dict[int, int] = {}
+    for size in sizes:
+        hub = proximo
+        proximo += 1
+        hubs.append(hub)
+        tamanho[hub] = size
+        for _ in range(size):
+            edges.append((proximo, hub))
+            proximo += 1
+    for hub in hubs:
+        outros = [h for h in hubs if h != hub]
+        pesos = [tamanho[h] for h in outros]
+        for _ in range(int(tamanho[hub] * external_fraction)):
+            edges.append((hub, rng.choices(outros, weights=pesos)[0]))
+    g = igraph.Graph(directed=True)
+    g.add_vertices(proximo)
+    g.add_edges(edges)
+    g.es["weight"] = [1.0] * len(edges)
+    return g
+
+
 def write_jsonl(events: list[dict[str, Any]], path) -> None:
     import json
     from pathlib import Path
