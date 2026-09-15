@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -196,6 +197,79 @@ def cmd_export(args: argparse.Namespace) -> int:
             for nome, quantos in contagens.items():
                 print(f"  {nome + '.csv':<20}{quantos:>8,} linhas".replace(",", "."))
             print(f"  {'manifest.json':<20}{len(manifesto['ressalvas']):>8} ressalvas")
+        return 0
+    finally:
+        conn.close()
+
+
+def _recorte(texto: str) -> tuple[str, str]:
+    """'2023-01-23:amp:core' -> ('2023-01-23', 'amp:core').
+
+    Corta no PRIMEIRO dois-pontos: o escopo tem os seus próprios (`amp:core`,
+    `reply@amp:core`) e a janela nunca tem.
+    """
+    if ":" not in texto:
+        raise ValueError(f"esperado JANELA:ESCOPO, veio {texto!r}")
+    window, scope = texto.split(":", 1)
+    return window, scope
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Duas análises lado a lado, casadas por sobreposição de membros.
+
+    Serve para as duas perguntas que a POC deixou em aberto:
+
+      mesma janela, visões diferentes   promove os seus E discute com os outros?
+      janelas diferentes, mesma visão   os campos são os MESMOS toda semana?
+
+    Nunca casa por número de comunidade. A numeração é por tamanho dentro do
+    recorte, então "#0" de uma semana não é "#0" da seguinte, e uma tabela
+    alinhada por número sairia plausível e falsa.
+    """
+    conn = db.connect(args.db)
+    try:
+        (ja, ea), (jb, eb) = _recorte(args.a), _recorte(args.b)
+        linhas = graph.match_communities(conn, ja, ea, jb, eb)
+        if not linhas:
+            print(f"nada em {args.a}. Rode `analyze` para esse escopo.",
+                  file=sys.stderr)
+            return 1
+
+        def metricas(window: str, scope: str) -> dict[int, sqlite3.Row]:
+            return {r["community_id"]: r for r in conn.execute(
+                "SELECT community_id, size, ei_mean, ei_choice, choice_actors "
+                "FROM community WHERE window_start=? AND scope=?", (window, scope))}
+
+        ma, mb = metricas(ja, ea), metricas(jb, eb)
+        print(f"A = {ja}  {ea}")
+        print(f"B = {jb}  {eb}\n")
+        print(f"{'A':>5}{'B':>7}{'sobrep':>9}{'atores A':>11}{'atores B':>11}"
+              f"{'E-I A':>9}{'E-I B':>9}{'salto':>9}")
+        print("-" * 70)
+        for linha in linhas[:args.top]:
+            if linha["n_a"] < args.min_community:
+                continue
+            ra = ma.get(linha["a"])
+            rb = mb.get(linha["b"]) if linha["b"] is not None else None
+            # `ei_choice` é o comparável; `ei_mean` anda junto do tamanho.
+            va = ra["ei_choice"] if ra and ra["ei_choice"] is not None else None
+            vb = rb["ei_choice"] if rb and rb["ei_choice"] is not None else None
+            fraco = linha["jaccard"] < graph.MATCH_MIN_JACCARD
+            alvo = "—" if linha["b"] is None or fraco else f"#{linha['b']}"
+            print(f"  #{linha['a']:<3}{alvo:>7}{linha['jaccard']:>9.2f}"
+                  f"{linha['n_a']:>11,}{linha['n_b'] if not fraco else 0:>11,}"
+                  f"{va if va is None else f'{va:+.2f}':>9}"
+                  f"{(vb if vb is None or fraco else f'{vb:+.2f}') or '—':>9}"
+                  f"{('—' if va is None or vb is None or fraco else f'{vb - va:+.2f}'):>9}"
+                  .replace(",", "."))
+
+        fracos = [l for l in linhas[:args.top]
+                  if l["n_a"] >= args.min_community
+                  and l["jaccard"] < graph.MATCH_MIN_JACCARD]
+        if fracos:
+            print(f"\n{len(fracos)} comunidade(s) de A sem par em B "
+                  f"(sobreposição < {graph.MATCH_MIN_JACCARD:.0%}): "
+                  f"não são a mesma comunidade vista duas vezes.")
         return 0
     finally:
         conn.close()
@@ -1052,6 +1126,14 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--out", default="export", metavar="DIR",
                     help="diretório de saída (padrão: export/)")
 
+    cp = sub.add_parser("compare", help="duas análises lado a lado")
+    cp.add_argument("a", metavar="JANELA:ESCOPO",
+                    help="ex.: 2023-01-23:amp:core")
+    cp.add_argument("b", metavar="JANELA:ESCOPO",
+                    help="ex.: 2023-01-23:reply@amp:core")
+    cp.add_argument("--top", type=int, default=20)
+    cp.add_argument("--min-community", type=int, default=1, metavar="N")
+
     runs = sub.add_parser("runs", help="de onde veio cada aresta: termo por janela")
     runs.add_argument("--top", type=int, default=10,
                       help="termos por janela (padrão: 10)")
@@ -1125,6 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
             "themes": cmd_themes, "export": cmd_export,
+            "compare": cmd_compare,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)

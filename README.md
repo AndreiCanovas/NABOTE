@@ -327,6 +327,25 @@ em modo editável: `pip install -e .` (aí o comando `nabote` fica disponível).
 
 O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 
+### Comparar dois recortes
+
+```bash
+nabote compare 2023-01-23:amp:core 2023-01-23:reply@amp:core   # visões
+nabote compare 2023-01-16:amp:core 2023-01-23:amp:core          # semanas
+```
+
+Responde as duas perguntas que a estrutura de campos levanta: *promove os seus
+E discute com os outros?* e *os campos são os mesmos toda semana?*
+
+O casamento é por **sobreposição de membros**, nunca por número de comunidade. A
+numeração é por tamanho dentro do recorte, então "#0" de uma semana não é "#0"
+da seguinte, e uma tabela alinhada por número sairia plausível e falsa. Quando a
+partição é a mesma — visões comparadas via `--partition` — a sobreposição sai em
+1,0 e confirma que nada se embaralhou.
+
+Comunidade de A cuja melhor sobreposição em B fica abaixo de 20% aparece sem
+par: não é a mesma comunidade vista duas vezes.
+
 ### Exportação (passo 4)
 
 ```bash
@@ -358,7 +377,7 @@ não leu a conversa, e número sem ressalva vira slide.
 python3 -m unittest discover -s tests
 ```
 
-186 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+191 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

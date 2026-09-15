@@ -747,6 +747,82 @@ class TestConcentracao(unittest.TestCase):
         self.assertGreaterEqual(r["concentracao"]["topn"], r["concentracao"]["top1"])
 
 
+class TestCasamentoDeComunidades(unittest.TestCase):
+    """Casar por número de comunidade produziria tabela plausível e falsa.
+
+    A numeração é por TAMANHO dentro do recorte, então "#0" de uma semana não é
+    "#0" da seguinte. O casamento tem de ser por sobreposição de membros.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "m.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        agora = "2023-01-23T00:00:00Z"
+        self.conn.executemany(
+            "INSERT INTO actor (platform, platform_user_id, tier, first_seen_at, "
+            "last_seen_at) VALUES ('x', ?, 'C', ?, ?)",
+            [(f"u{i}", agora, agora) for i in range(1, 31)])
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _planta(self, window: str, scope: str, grupos: dict[int, range]):
+        self.conn.executemany(
+            "INSERT INTO actor_community (actor_id, window_start, scope, "
+            "community_id) VALUES (?,?,?,?)",
+            [(a, window, scope, com) for com, atores in grupos.items() for a in atores])
+
+    def test_casa_apesar_da_renumeracao(self):
+        """Mesmos atores, números TROCADOS entre os dois recortes. Casar por
+        número daria o par errado nas duas linhas."""
+        self._planta("2023-01-23", "amp", {0: range(1, 21), 1: range(21, 31)})
+        self._planta("2023-01-30", "amp", {0: range(21, 31), 1: range(1, 21)})
+        linhas = graph.match_communities(self.conn, "2023-01-23", "amp",
+                                         "2023-01-30", "amp")
+        pares = {l["a"]: (l["b"], round(l["jaccard"], 3)) for l in linhas}
+        self.assertEqual(pares, {0: (1, 1.0), 1: (0, 1.0)})
+
+    def test_particao_identica_da_jaccard_um(self):
+        """Autoverificação: comparando visões via --partition, a partição é a
+        MESMA, e sobreposição 1,0 confirma que nada se embaralhou."""
+        self._planta("2023-01-23", "amp:core", {0: range(1, 21), 1: range(21, 31)})
+        self._planta("2023-01-23", "reply@amp:core",
+                     {0: range(1, 21), 1: range(21, 31)})
+        for linha in graph.match_communities(
+                self.conn, "2023-01-23", "amp:core", "2023-01-23", "reply@amp:core"):
+            self.assertEqual(linha["a"], linha["b"])
+            self.assertEqual(linha["jaccard"], 1.0)
+
+    def test_sem_par_devolve_none(self):
+        self._planta("2023-01-23", "amp", {0: range(1, 11)})
+        self._planta("2023-01-30", "amp", {0: range(21, 31)})
+        linha = graph.match_communities(self.conn, "2023-01-23", "amp",
+                                        "2023-01-30", "amp")[0]
+        self.assertIsNone(linha["b"])
+        self.assertEqual(linha["jaccard"], 0.0)
+
+    def test_sobreposicao_parcial_escolhe_o_maior(self):
+        """Com dois candidatos, vence o de maior Jaccard — não o de maior
+        interseção bruta, que favoreceria sempre a comunidade grande."""
+        self._planta("2023-01-23", "amp", {0: range(1, 11)})
+        self._planta("2023-01-30", "amp", {
+            0: range(1, 7),        # 6 em comum, mas comunidade de 6 → J = 6/10
+            1: range(7, 31)})      # 4 em comum, comunidade de 24 → J = 4/30
+        linha = graph.match_communities(self.conn, "2023-01-23", "amp",
+                                        "2023-01-30", "amp")[0]
+        self.assertEqual(linha["b"], 0)
+        self.assertAlmostEqual(linha["jaccard"], 0.6)
+
+    def test_ordena_da_maior_para_a_menor(self):
+        self._planta("2023-01-23", "amp", {0: range(1, 6), 1: range(6, 26)})
+        self._planta("2023-01-30", "amp", {0: range(1, 26)})
+        tamanhos = [l["n_a"] for l in graph.match_communities(
+            self.conn, "2023-01-23", "amp", "2023-01-30", "amp")]
+        self.assertEqual(tamanhos, sorted(tamanhos, reverse=True))
+
+
 class TestRelabel(unittest.TestCase):
     def test_ordena_por_tamanho_decrescente(self):
         # rótulos originais: 7 aparece 1×, 3 aparece 3×, 5 aparece 2×

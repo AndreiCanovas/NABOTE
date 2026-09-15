@@ -388,6 +388,65 @@ def imported_partition(
     return {a: lookup[a] for a in actor_ids if a in lookup}
 
 
+# Abaixo disto, duas comunidades não são "a mesma vista duas vezes": são
+# comunidades diferentes que por acaso compartilham gente.
+MATCH_MIN_JACCARD = 0.2
+
+
+def match_communities(
+    conn: sqlite3.Connection, window_a: str, scope_a: str,
+    window_b: str, scope_b: str, graph_version: int = GRAPH_VERSION,
+) -> list[dict[str, Any]]:
+    """Casa comunidades de dois recortes por SOBREPOSIÇÃO DE MEMBROS.
+
+    Número de comunidade é local ao recorte: a numeração é por tamanho dentro
+    daquela janela, então "#0" de uma semana não é "#0" da seguinte. Comparar as
+    duas listas pelo número produziria uma tabela plausível e sem sentido — o
+    mesmo erro que o `--partition` existe para evitar entre visões.
+
+    Sobreposição funciona nos dois casos e se autoverifica: quando a partição é
+    a MESMA (visões comparadas via `--partition`), o casamento sai com Jaccard
+    alto e confirma que nada se embaralhou.
+
+    Devolve uma linha por comunidade de A, da maior para a menor, com o melhor
+    par em B. `jaccard` 0 e `b` None quando nada em B se parece com ela.
+    """
+    def carrega(window: str, scope: str) -> dict[int, set[int]]:
+        grupos: dict[int, set[int]] = {}
+        for r in conn.execute(
+            "SELECT actor_id, community_id FROM actor_community "
+            "WHERE window_start=? AND scope=? AND graph_version=?",
+            (window, scope, graph_version)
+        ):
+            grupos.setdefault(r["community_id"], set()).add(r["actor_id"])
+        return grupos
+
+    a = carrega(window_a, scope_a)
+    b = carrega(window_b, scope_b)
+    # ator -> comunidade em B, para contar a interseção numa passada só. Comparar
+    # conjunto contra conjunto seria O(comunidades²·tamanho) e não termina.
+    onde = {actor: com for com, membros in b.items() for actor in membros}
+
+    linhas = []
+    for com_a, membros in sorted(a.items(), key=lambda kv: -len(kv[1])):
+        contagem: dict[int, int] = {}
+        for actor in membros:
+            com_b = onde.get(actor)
+            if com_b is not None:
+                contagem[com_b] = contagem.get(com_b, 0) + 1
+        melhor, comum, jaccard = None, 0, 0.0
+        for com_b, n in contagem.items():
+            j = n / (len(membros) + len(b[com_b]) - n)
+            if j > jaccard:
+                melhor, comum, jaccard = com_b, n, j
+        linhas.append({
+            "a": com_a, "b": melhor, "jaccard": jaccard,
+            "n_a": len(membros), "n_b": len(b[melhor]) if melhor is not None else 0,
+            "comum": comum,
+        })
+    return linhas
+
+
 def analyze_window(
     conn: sqlite3.Connection, window_start: str, view: str = DEFAULT_VIEW,
     edge_scope: str = "all", graph_version: int = GRAPH_VERSION,
