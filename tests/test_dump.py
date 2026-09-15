@@ -45,7 +45,7 @@ class DumpTestCase(unittest.TestCase):
     def dump(self, **kwargs) -> str:
         args = argparse.Namespace(
             db=str(self.path), window=None, all=False, scope="all",
-            view="amp", top=10, min_community=1, community=None)
+            view="amp", top=10, min_community=1, community=None, core=False)
         for key, value in kwargs.items():
             setattr(args, key, value)
         buffer = io.StringIO()
@@ -79,6 +79,51 @@ class TestArestasRespeitamAVisao(DumpTestCase):
         total = saida.split("peso total por tipo na janela inteira")[1]
         self.assertIn("reply", total)
         self.assertIn("(fora da visão)", total)
+
+
+class TestNucleoNoDump(DumpTestCase):
+    """Sob `--core`, cabeçalho e lista têm de falar do MESMO grafo.
+
+    A lista de arestas lia o `edge_window` direto e mostrava as mesmas arestas
+    do grafo cheio, inclusive de atores que a poda removeu. O cabeçalho anunciava
+    o núcleo e a lista exibia outra coisa.
+    """
+
+    def setUp(self):
+        super().setUp()
+        conn = db.connect(self.path)
+        window = graph.windows_present(conn)[0]
+        graph.analyze_window(conn, window, view="amp", core=True)
+        self.nucleo = {r["platform_user_id"] for r in conn.execute(
+            "SELECT a.platform_user_id FROM actor_community c "
+            "JOIN actor a ON a.actor_id = c.actor_id WHERE c.scope='amp:core'")}
+        conn.close()
+
+    def _arestas(self, saida: str) -> list[str]:
+        trecho = saida.split("arestas mais pesadas")[1].split("peso total")[0]
+        return [l for l in trecho.splitlines() if "->" in l]
+
+    def test_cabecalho_nomeia_o_escopo_do_nucleo(self):
+        self.assertIn("da visão amp:core", self.dump(core=True))
+
+    def test_so_lista_arestas_entre_atores_do_nucleo(self):
+        self.assertTrue(self.nucleo, "o núcleo ficou vazio; teste não vale")
+        for linha in self._arestas(self.dump(core=True, top=30)):
+            origem, destino = linha.split("-")[0].strip(), linha.split("->")[1].strip()
+            destino = destino.rsplit(" ", 1)[0].strip()
+            self.assertIn(origem, self.nucleo, f"ator podado na lista: {origem}")
+            self.assertIn(destino, self.nucleo, f"ator podado na lista: {destino}")
+
+    def test_a_lista_do_nucleo_e_subconjunto_estrito(self):
+        """Com o teto alto o bastante para caber tudo: a lista do núcleo tem de
+        ser exatamente a do grafo cheio menos as arestas de atores podados."""
+        cheio = set(self._arestas(self.dump(top=500)))
+        nucleo = set(self._arestas(self.dump(core=True, top=500)))
+        self.assertTrue(nucleo, "o núcleo não listou aresta nenhuma")
+        self.assertTrue(nucleo < cheio, "deveria ser subconjunto ESTRITO")
+        podadas = cheio - nucleo
+        self.assertTrue(any("solto" in linha for linha in podadas),
+                        "as díades soltas deveriam ter sumido da lista")
 
 
 class TestFiltroDeComunidade(DumpTestCase):

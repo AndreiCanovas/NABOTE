@@ -491,7 +491,16 @@ def cmd_dump(args: argparse.Namespace) -> int:
         # lê o dump conclui coisa errada sobre o que produziu as comunidades.
         tipos = graph.VIEWS[args.view]
         marcadores = ",".join("?" * len(tipos))
-        print(f"\narestas mais pesadas da visão {args.view} "
+        # Sob `--core`, a lista tem de mostrar arestas DO NÚCLEO. Senão o
+        # cabeçalho anuncia um grafo e a lista exibe outro — inclusive atores
+        # que foram podados. Quem está no núcleo é quem tem métrica no escopo.
+        no_nucleo = ("" if not getattr(args, "core", False) else f"""
+              AND e.src_actor_id IN (SELECT actor_id FROM actor_community
+                                     WHERE window_start=? AND scope=?)
+              AND e.dst_actor_id IN (SELECT actor_id FROM actor_community
+                                     WHERE window_start=? AND scope=?)""")
+        extra = (window, scope, window, scope) if no_nucleo else ()
+        print(f"\narestas mais pesadas da visão {scope} "
               f"({' + '.join(tipos)})")
         for r in conn.execute(f"""
             SELECT s.handle AS sh, s.platform_user_id AS sd,
@@ -500,8 +509,9 @@ def cmd_dump(args: argparse.Namespace) -> int:
             JOIN actor s ON s.actor_id=e.src_actor_id
             JOIN actor d ON d.actor_id=e.dst_actor_id
             WHERE e.window_start=? AND e.scope=? AND e.kind IN ({marcadores})
+                  {no_nucleo}
             ORDER BY e.weight DESC LIMIT ?
-        """, (window, args.scope, *tipos, args.top)).fetchall():
+        """, (window, args.scope, *tipos, *extra, args.top)).fetchall():
             print(f"  {(r['sh'] or r['sd'])[:26]:<27} -{r['kind']:>8}-> "
                   f"{(r['dh'] or r['dd'])[:26]:<27} {r['weight']:.0f}")
 
