@@ -735,6 +735,24 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _semanas_vazias(janelas: list[str]) -> list[str]:
+    """Segundas-feiras sem dado nenhum entre a primeira e a última com dado."""
+    if len(janelas) < 2:
+        return []
+    from datetime import date, timedelta
+
+    presentes = set(janelas)
+    inicio = date.fromisoformat(janelas[0])
+    fim = date.fromisoformat(janelas[-1])
+    faltando = []
+    atual = inicio + timedelta(days=7)
+    while atual < fim:
+        if atual.isoformat() not in presentes:
+            faltando.append(atual.isoformat())
+        atual += timedelta(days=7)
+    return faltando
+
+
 def _no_intervalo(data: str | None, de: str | None, ate: str | None) -> bool:
     """Data do nome do arquivo dentro do intervalo, inclusive nas duas pontas.
 
@@ -746,7 +764,8 @@ def _no_intervalo(data: str | None, de: str | None, ate: str | None) -> bool:
     return (de is None or data >= de) and (ate is None or data <= ate)
 
 
-def _cobertura(selecionados, pendentes, feitos, todos, parse) -> None:
+def _cobertura(selecionados, pendentes, feitos, todos, parse,
+               recortado: bool = True) -> None:
     """Mostra a seleção por SEMANA e diz se cada uma está completa.
 
     Semana pela metade é o problema silencioso desta base: a análise agrega por
@@ -772,15 +791,38 @@ def _cobertura(selecionados, pendentes, feitos, todos, parse) -> None:
             alvo["termos"].add(termo or "?")
 
     print(f"\n{'semana':<13}{'dias':>10}{'termos':>9}   situação")
-    print("-" * 56)
-    for janela in sorted(j for j, v in por_janela.items() if v["sel"]):
+    print("-" * 60)
+    com_selecao = sorted(j for j, v in por_janela.items() if v["sel"])
+    for janela in com_selecao:
         v = por_janela[janela]
         faltam = v["zip"] - v["sel"]
-        situacao = ("completa" if not faltam
-                    else f"PARCIAL — faltam {len(faltam)} dia(s): "
-                         + ", ".join(sorted(faltam)[:3]))
+        if not recortado:
+            # Sem recorte, TODA semana está "completa" por definição, e dizer
+            # isso é tautologia disfarçada de aprovação. A coluna só informa
+            # quando existe seleção para comparar.
+            situacao = "(sem recorte: tudo)"
+        elif faltam:
+            situacao = (f"PARCIAL — faltam {len(faltam)} dia(s): "
+                        + ", ".join(sorted(faltam)[:3]))
+        else:
+            situacao = "completa"
         print(f"{janela:<13}{len(v['sel']):>4}/{len(v['zip']):<5}"
               f"{len(v['termos']):>9}   {situacao}")
+
+    # Buraco entre semanas é informação de primeira ordem: série temporal que
+    # atravessa um vazio compara os dois lados dele como se fossem contíguos.
+    vazias = _semanas_vazias(sorted(por_janela))
+    if vazias:
+        print(f"\n{len(vazias)} semana(s) SEM DADO no zip, entre a primeira e a "
+              f"última: {', '.join(vazias[:6])}"
+              + (f" … e mais {len(vazias) - 6}" if len(vazias) > 6 else ""))
+        print("     série temporal que atravessa um vazio desses compara os dois "
+              "lados como se fossem contíguos.")
+
+    dias = sum(len(v["sel"]) for v in por_janela.values())
+    print(f"\n{dias} dia(s) de coleta em {len(com_selecao)} semana(s)"
+          + (f", cobrindo {len(por_janela)} semanas de calendário"
+             if len(por_janela) != len(com_selecao) else ""))
 
     nao_carregados = [m for m in selecionados if m not in pendentes and m not in feitos]
     if nao_carregados:
@@ -845,7 +887,8 @@ def cmd_load_x(args: argparse.Namespace) -> int:
             print("nada a carregar — tudo já está no banco.")
             return 0
 
-        _cobertura(membros, pendentes, feitos, members_of(alvo), parse_member_name)
+        _cobertura(membros, pendentes, feitos, members_of(alvo), parse_member_name,
+                   recortado=bool(args.date_from or args.date_to or args.member))
         if args.dry_run:
             print("\n--dry-run: nada foi carregado.")
             return 0

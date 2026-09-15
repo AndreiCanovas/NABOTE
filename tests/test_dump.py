@@ -445,11 +445,23 @@ class TestCobertura(unittest.TestCase):
         base = nome.removesuffix(".parquet")
         return base[:10], base[11:]
 
-    def _relatorio(self, selecionados) -> str:
+    def _relatorio(self, selecionados, recortado=True) -> str:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            cli._cobertura(selecionados, selecionados, set(), self.ZIP, self._parse)
+            cli._cobertura(selecionados, selecionados, set(), self.ZIP, self._parse,
+                           recortado=recortado)
         return buffer.getvalue()
+
+    def test_sem_recorte_nao_diz_completa(self):
+        """Sem seleção, toda semana está "completa" por definição — dizer isso é
+        tautologia disfarçada de aprovação, e quem lê entende que conferiu algo."""
+        saida = self._relatorio(self.ZIP, recortado=False)
+        self.assertNotIn("completa", saida)
+        self.assertIn("sem recorte", saida)
+
+    def test_com_recorte_volta_a_julgar(self):
+        self.assertIn("completa",
+                      self._relatorio([m for m in self.ZIP if m < "2022-12-32"]))
 
     def test_semana_inteira_sai_como_completa(self):
         semana = [m for m in self.ZIP if m < "2022-12-32"]
@@ -470,6 +482,30 @@ class TestCobertura(unittest.TestCase):
         saida = self._relatorio([m for m in self.ZIP if m.startswith("2023-01")])
         self.assertIn("2023-01-02", saida)
         self.assertNotIn("2022-12-26", saida)
+
+
+class TestSemanasVazias(unittest.TestCase):
+    """Buraco entre semanas é informação de primeira ordem.
+
+    A base real tem três semanas sem dado nenhum entre 30/01 e 27/02 de 2023.
+    Uma série temporal que atravessa esse vazio compara os dois lados dele como
+    se fossem contíguos — e o gráfico não mostra o buraco.
+    """
+
+    def test_encontra_o_vazio_no_meio(self):
+        self.assertEqual(
+            cli._semanas_vazias(["2023-01-30", "2023-02-27"]),
+            ["2023-02-06", "2023-02-13", "2023-02-20"])
+
+    def test_semanas_seguidas_nao_tem_vazio(self):
+        self.assertEqual(
+            cli._semanas_vazias(["2023-01-02", "2023-01-09", "2023-01-16"]), [])
+
+    def test_nao_inventa_vazio_nas_bordas(self):
+        """Antes da primeira e depois da última não é buraco: é fora do período
+        coletado, e chamar de ausência sugeriria um problema que não existe."""
+        self.assertEqual(cli._semanas_vazias(["2023-01-02"]), [])
+        self.assertEqual(cli._semanas_vazias([]), [])
 
 
 class TestArquivoCru(unittest.TestCase):
