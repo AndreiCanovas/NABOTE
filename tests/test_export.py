@@ -165,6 +165,14 @@ class TestManifesto(ExportTestCase):
         self.assertIn("PageRank", texto)
         self.assertIn("in_degree_w", texto)
 
+    def test_explica_a_contagem_de_arestas(self):
+        """Quem comparar o total do edges.csv com o número de arestas que o
+        `analyze` reportou vai achar divergência. As duas contagens estão
+        certas e contam coisas diferentes — sem isso escrito, parece bug."""
+        texto = " ".join(self._manifesto()["ressalvas"])
+        self.assertIn("edges.csv", texto)
+        self.assertIn("MENOS", texto)
+
     def test_avisa_que_a_janela_e_curta(self):
         texto = " ".join(self._manifesto()["ressalvas"])
         self.assertIn("dia(s) de coleta", texto)

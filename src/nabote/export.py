@@ -196,6 +196,9 @@ def manifest(conn: sqlite3.Connection, window: str, scope: str,
         "rank dele. Leia sempre junto de in_degree_w.",
         "Comunidade é numerada por tamanho DENTRO desta janela. #0 é a maior "
         "aqui, e não corresponde à #0 de outra janela.",
+        "edges.csv tem uma linha por (origem, destino, TIPO). O grafo funde "
+        "repost e citação do mesmo par numa aresta só, então ele tem MENOS "
+        "arestas que este arquivo tem linhas. Os dois números estão certos.",
     ]
     if scope.endswith(":core"):
         ressalvas.append(
