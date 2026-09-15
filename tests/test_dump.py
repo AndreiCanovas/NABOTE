@@ -409,6 +409,51 @@ class TestAnalyzeReporta(unittest.TestCase):
         self.assertIn("têm mais de uma aresta", saida)
 
 
+class TestArquivoCru(unittest.TestCase):
+    """O payload cru é seguro contra bug de parser: reprocessar é grátis,
+    recoletar de uma API não é. Carregando de um zip local essa razão some — o
+    zip é o arquivo — e guardar de novo duplicaria gigabytes."""
+
+    def _carrega(self, store_raw: bool) -> tuple[int, int]:
+        from nabote.events import NormalizedEvent, Target
+
+        class Fonte:
+            def __init__(self, eventos):
+                self.name, self._eventos, self.skipped = "zip", eventos, 0
+
+            def events(self, cursor=None):
+                yield from self._eventos
+
+        eventos = [NormalizedEvent(
+            platform="x", kind="post", actor_uid=f"a{i}",
+            occurred_at="2022-12-28T10:00:00Z", post_uid=f"p{i}",
+            post_type="repost", text="texto qualquer",
+            targets=[Target(kind="repost", uid="hub")],
+            raw={"campo": "x" * 500}) for i in range(50)]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "r.db")
+            db.migrate(conn, ROOT / "migrations")
+            ingest.ingest(conn, Fonte(eventos), kind="campanha",
+                          campaign_label="t", resume=False, store_raw=store_raw)
+            crus = conn.execute("SELECT COUNT(*) n FROM raw_payload").fetchone()["n"]
+            posts = conn.execute("SELECT COUNT(*) n FROM post").fetchone()["n"]
+            conn.close()
+        return crus, posts
+
+    def test_por_padrao_arquiva(self):
+        crus, posts = self._carrega(store_raw=True)
+        self.assertEqual(crus, posts)
+        self.assertEqual(posts, 50)
+
+    def test_sem_raw_o_grafo_continua_completo(self):
+        """O que não pode acontecer é o atalho custar aresta: post e interaction
+        têm de sair idênticos, só sem a cópia do payload."""
+        crus, posts = self._carrega(store_raw=False)
+        self.assertEqual(crus, 0)
+        self.assertEqual(posts, 50)
+
+
 class TestMigracaoPendente(unittest.TestCase):
     def test_detecta_schema_atrasado(self):
         """Coluna nova que só é LIDA some em silêncio num schema velho, e o

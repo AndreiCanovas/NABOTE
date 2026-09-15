@@ -118,7 +118,8 @@ def _apply_delete(conn: sqlite3.Connection, platform: str, post_uid: str,
 
 
 def handle_event(conn: sqlite3.Connection, run_id: int, ev: NormalizedEvent,
-                 stats: Stats, author_tier: str = "C") -> None:
+                 stats: Stats, author_tier: str = "C",
+                 store_raw: bool = True) -> None:
     if ev is None:
         stats.events_ignored += 1
         return
@@ -138,7 +139,8 @@ def handle_event(conn: sqlite3.Connection, run_id: int, ev: NormalizedEvent,
         _apply_delete(conn, ev.platform, ev.post_uid, stats)
         return
 
-    _store_raw(conn, run_id, ev.platform, ev.post_uid, ev.raw)
+    if store_raw:
+        _store_raw(conn, run_id, ev.platform, ev.post_uid, ev.raw)
     actor_id = upsert_actor(conn, ev.platform, ev.actor_uid, author_tier,
                             ev.actor_handle, stats)
 
@@ -213,12 +215,19 @@ def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
 def ingest(conn: sqlite3.Connection, source: Any, *, kind: str = "baseline",
            campaign_label: str | None = None, max_events: int | None = None,
            max_seconds: float | None = None, author_tier: str = "C",
-           resume: bool = True, cost_usd: float = 0.0) -> tuple[int, Stats]:
+           resume: bool = True, cost_usd: float = 0.0,
+           store_raw: bool = True) -> tuple[int, Stats]:
     """Consome a fonte até o teto de eventos ou de tempo. Devolve (run_id, stats).
 
     Os tetos não são conveniência: o plano exige que orçamento seja código, e
     um coletor sem limite contra um firehose é um jeito de descobrir isso pela
     fatura.
+
+    `store_raw=False` pula o arquivo imutável de payloads. O arquivo existe
+    porque refazer uma coleta de API custa dinheiro: se o parser tiver um bug,
+    reprocessar o payload guardado é grátis e recoletar não é. Carregando de um
+    zip que já está no disco, essa razão não se aplica — o zip É o arquivo, e
+    guardar de novo só duplica gigabytes. Para coleta de rede, mantenha ligado.
     """
     run_id = start_run(conn, source.name, kind, campaign_label)
     stats = Stats()
@@ -231,7 +240,7 @@ def ingest(conn: sqlite3.Connection, source: Any, *, kind: str = "baseline",
         conn.execute("BEGIN")
         for ev in source.events(cursor):
             stats.events_seen += 1
-            handle_event(conn, run_id, ev, stats, author_tier)
+            handle_event(conn, run_id, ev, stats, author_tier, store_raw)
             if ev is not None and ev.cursor:
                 last_cursor = ev.cursor
 

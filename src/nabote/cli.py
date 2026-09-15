@@ -784,7 +784,8 @@ def cmd_load_x(args: argparse.Namespace) -> int:
             fonte = XParquetSource(alvo, membro)
             run_id, st = ingest.ingest(
                 conn, fonte, kind="campanha", campaign_label=termo or membro,
-                author_tier=args.author_tier, resume=False)
+                author_tier=args.author_tier, resume=False,
+                store_raw=not args.no_raw)
             conn.execute("UPDATE collection_run SET query = ? WHERE run_id = ?",
                          (membro, run_id))
             for campo, valor in st.as_dict().items():
@@ -891,6 +892,10 @@ def build_parser() -> argparse.ArgumentParser:
     lx.add_argument("--files", type=int, default=None,
                     help="carrega só os N primeiros arquivos (comece pequeno)")
     lx.add_argument("--member", help="só arquivos cujo nome contenha este texto")
+    lx.add_argument("--no-raw", action="store_true",
+                    help="não arquiva o payload cru. O arquivo existe porque "
+                         "recoletar de uma API custa dinheiro; o zip já está no "
+                         "seu disco, então guardar de novo só duplica gigabytes")
     lx.add_argument("--author-tier", default="C", choices=["A", "B", "C"],
                     help="tier dos autores; C é o certo aqui, porque a coleta foi "
                          "por termo e não por conta curada")
