@@ -12,7 +12,7 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -418,6 +418,52 @@ class TestAnalyzeReporta(unittest.TestCase):
         saida = self.analyze()
         self.assertIn("E-I com escolha:", saida)
         self.assertIn("têm mais de uma aresta", saida)
+
+
+class TestCaminhoDeEntrada(unittest.TestCase):
+    """Erro de digitação merece uma frase, não um traceback do zipfile.
+
+    Aconteceu de verdade: uma variável de shell vazia virou `.`, passou no
+    `exists()` — diretório existe — e explodiu dentro da biblioteca.
+    """
+
+    def _tenta(self, caminho, sufixos=(".zip",)):
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            resultado = cli._arquivo_de_entrada(caminho, sufixos)
+        return resultado, buffer.getvalue()
+
+    def test_diretorio_e_recusado_com_mensagem(self):
+        resultado, erro = self._tenta(".")
+        self.assertIsNone(resultado)
+        self.assertIn("diretório", erro)
+
+    def test_variavel_vazia_sugere_a_causa(self):
+        resultado, erro = self._tenta("")
+        self.assertIsNone(resultado)
+        self.assertIn("vazio", erro)
+        self.assertIn("shell", erro)
+
+    def test_extensao_errada_e_recusada(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arquivo = Path(tmp) / "base.txt"
+            arquivo.write_text("x", encoding="utf-8")
+            resultado, erro = self._tenta(str(arquivo))
+        self.assertIsNone(resultado)
+        self.assertIn(".zip", erro)
+
+    def test_arquivo_certo_passa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arquivo = Path(tmp) / "base.zip"
+            arquivo.write_bytes(b"PK")
+            resultado, _ = self._tenta(str(arquivo))
+        self.assertEqual(resultado, arquivo)
+
+    def test_expande_o_til(self):
+        """`~/Downloads/...` entre aspas não é expandido pelo shell em toda
+        situação, e Path não expande sozinho."""
+        resultado, _ = self._tenta("~/nao-existe-12345.zip")
+        self.assertIsNone(resultado)
 
 
 class TestRecortePorData(unittest.TestCase):

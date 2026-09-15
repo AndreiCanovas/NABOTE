@@ -811,11 +811,36 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_inspect(args: argparse.Namespace) -> int:
-    """Mostra esquema e amostra de uma base externa, antes de escrever adaptador."""
-    alvo = Path(args.path)
+def _arquivo_de_entrada(caminho: str, sufixos: tuple[str, ...]) -> Path | None:
+    """Valida o caminho ANTES de entregá-lo a uma biblioteca.
+
+    `exists()` sozinho não basta: diretório existe. Uma variável de shell vazia
+    vira `.`, passa no teste e explode lá dentro com traceback — que é o que
+    aconteceu. Erro de digitação do usuário merece uma frase, não uma pilha de
+    chamadas do zipfile.
+    """
+    if not caminho:
+        print("caminho vazio. A variável do shell foi perdida? "
+              "Redefina e tente de novo.", file=sys.stderr)
+        return None
+    alvo = Path(caminho).expanduser()
     if not alvo.exists():
         print(f"não encontrei {alvo}", file=sys.stderr)
+        return None
+    if alvo.is_dir():
+        print(f"{alvo} é um diretório; esperava um arquivo "
+              f"{' ou '.join(sufixos)}.", file=sys.stderr)
+        return None
+    if alvo.suffix not in sufixos:
+        print(f"{alvo} não tem extensão {' nem '.join(sufixos)}.", file=sys.stderr)
+        return None
+    return alvo
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Mostra esquema e amostra de uma base externa, antes de escrever adaptador."""
+    alvo = _arquivo_de_entrada(args.path, (".zip", ".parquet"))
+    if alvo is None:
         return 1
 
     if alvo.suffix == ".zip":
@@ -979,9 +1004,8 @@ def cmd_load_x(args: argparse.Namespace) -> int:
     """
     from .sources.x_parquet import XParquetSource, members_of, parse_member_name
 
-    alvo = Path(args.path)
-    if not alvo.exists():
-        print(f"não encontrei {alvo}", file=sys.stderr)
+    alvo = _arquivo_de_entrada(args.path, (".zip",))
+    if alvo is None:
         return 1
 
     conn = db.connect(args.db)
