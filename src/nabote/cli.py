@@ -365,7 +365,7 @@ def cmd_dossie(args: argparse.Namespace) -> int:
             (window, scope)).fetchone():
             print(f"{window}: sem análise em scope={scope}. Rode "
                   f"`analyze --window {window} --view {args.view} "
-                  f"--edge-scope {edge_scope}"
+                  f"--scope {edge_scope}"
                   f"{'' if args.no_core else ' --core'}`.", file=sys.stderr)
             return 1
 

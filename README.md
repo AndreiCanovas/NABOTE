@@ -362,7 +362,7 @@ atores centrais dentro dela, e as comunidades com fatia de volume e pautas.
 
 ```bash
 nabote aggregate --window 2023-01-23 --scope topic:Yanomami
-nabote analyze   --window 2023-01-23 --view amp --edge-scope topic:Yanomami --core
+nabote analyze   --window 2023-01-23 --view amp --scope topic:Yanomami --core
 nabote dossie    --window 2023-01-23 --topic Yanomami --out dossie.json
 ```
 

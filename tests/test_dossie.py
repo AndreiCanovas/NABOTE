@@ -412,3 +412,40 @@ class TestComandoDossie(DossieTestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             codigo = cli.main(argv)
         return codigo, out.getvalue(), err.getvalue()
+
+
+class TestMensagemDeErro(DossieTestCase):
+    """A mensagem de erro do dossiê dita um comando para o usuário rodar. Se
+    ela inventar uma flag, o usuário cola, o argparse recusa, e a culpa parece
+    ser dele. Este teste passa a mensagem pelo parser de verdade."""
+
+    def _erro_de(self, pauta):
+        import io
+        import contextlib
+        from nabote import cli
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            cli.main(["--db", self._caminho(), "dossie", "--window", self.window,
+                      "--topic", pauta, "--compact"])
+        return err.getvalue()
+
+    def _caminho(self):
+        return str(self.conn.execute("PRAGMA database_list").fetchone()["file"])
+
+    def test_o_comando_sugerido_e_aceito_pelo_parser(self):
+        import re
+        from nabote import cli
+        texto = self._erro_de(self.PAUTA)
+        sugestoes = re.findall(r"`([^`]+)`", texto)
+        self.assertTrue(sugestoes, f"nenhum comando sugerido em: {texto!r}")
+        for sug in sugestoes:
+            argv = sug.split()
+            with self.subTest(comando=sug):
+                try:
+                    cli.build_parser().parse_args(argv)
+                except SystemExit:
+                    self.fail(f"o dossiê sugere um comando que não existe: {sug}")
+
+    def test_sugere_aggregate_quando_nao_ha_arestas(self):
+        texto = self._erro_de("NaoExiste")
+        self.assertIn("aggregate", texto)
