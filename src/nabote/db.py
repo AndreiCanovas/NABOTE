@@ -93,6 +93,20 @@ def discover_migrations(directory: Path | str = MIGRATIONS_DIR) -> list[tuple[in
     return found
 
 
+def pending_migrations(
+    conn: sqlite3.Connection, directory: Path | str = MIGRATIONS_DIR
+) -> list[tuple[int, str]]:
+    """Migrações que existem no disco e ainda não foram aplicadas.
+
+    Existe para os comandos avisarem em voz alta. Rodar uma análise contra um
+    schema velho costuma dar erro claro, mas nem sempre: uma coluna nova que só
+    é LIDA some em silêncio, e o comando parece ter funcionado.
+    """
+    already = applied_versions(conn)
+    return [(version, name) for version, name, _ in discover_migrations(directory)
+            if version not in already]
+
+
 def migrate(
     conn: sqlite3.Connection, directory: Path | str = MIGRATIONS_DIR
 ) -> list[tuple[int, str]]:

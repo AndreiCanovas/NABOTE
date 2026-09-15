@@ -310,9 +310,20 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _avisa_migracao(conn) -> None:
+    """Schema velho faz comando novo mentir em silêncio. Avisa antes de rodar."""
+    pendentes = db.pending_migrations(conn)
+    if pendentes:
+        nomes = ", ".join(n for _, n in pendentes)
+        print(f"AVISO: {len(pendentes)} migração(ões) pendente(s): {nomes}\n"
+              f"       Rode `nabote init` — sem isso as colunas novas não existem.",
+              file=sys.stderr)
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     try:
+        _avisa_migracao(conn)
         windows = _windows(conn, args)
         if not windows:
             print("nenhuma interação no banco. Rode `fetch` antes.", file=sys.stderr)
@@ -331,6 +342,24 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             if r["core_share"] < 0.5:
                 print(f"{'':12}  ATENÇÃO: menos da metade dos atores está no núcleo. "
                       f"O grafo é uma pilha de cacos, não uma rede.")
+
+            # Sem isto, uma computação de 17s não deixa rastro na tela e não dá
+            # para saber se rodou. Já aconteceu.
+            if not args.null:
+                print(f"{'':12}  modelo nulo DESLIGADO — o E-I não é comparável "
+                      f"entre comunidades de tamanhos diferentes")
+                continue
+            zs = [row["ei_z"] for row in conn.execute(
+                "SELECT ei_z FROM community WHERE window_start=? AND scope=? "
+                "AND ei_z IS NOT NULL", (window, r["scope"]))]
+            if not zs:
+                print(f"{'':12}  modelo nulo: nenhuma comunidade teve nula "
+                      f"comparável (grafo pequeno demais?)")
+                continue
+            fechadas = sum(1 for z in zs if z <= -2)
+            print(f"{'':12}  modelo nulo ({args.null}x): z de {min(zs):+.1f} a "
+                  f"{max(zs):+.1f} em {len(zs)} comunidades · "
+                  f"{fechadas} com z ≤ −2 (fechadas além do tamanho)")
         return 0
     finally:
         conn.close()

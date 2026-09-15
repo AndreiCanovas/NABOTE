@@ -309,5 +309,67 @@ class TestThemes(unittest.TestCase):
         self.assertNotIn("posse", self.themes("2022-12-26", min_community=500))
 
 
+class TestAnalyzeReporta(unittest.TestCase):
+    """Computação de 17 segundos que não deixa rastro na tela é indistinguível
+    de computação que não rodou. Aconteceu: o `analyze` saiu idêntico ao de
+    antes do modelo nulo existir, e não havia como saber se tinha rodado."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "a.db"
+        conn = db.connect(self.path)
+        db.migrate(conn, ROOT / "migrations")
+        events, _ = planted_communities(n_communities=4, per_community=12)
+        ingest.ingest(conn, ListSource(events, "nucleo"), author_tier="A")
+        self.window = graph.windows_present(conn)[0]
+        graph.aggregate_window(conn, self.window)
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def analyze(self, null: int) -> str:
+        args = argparse.Namespace(db=str(self.path), window=None, all=True,
+                                  scope="all", view="amp", null=null)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self.assertEqual(cli.cmd_analyze(args), 0)
+        return buffer.getvalue()
+
+    def test_diz_que_o_nulo_rodou_e_em_que_faixa(self):
+        saida = self.analyze(null=5)
+        self.assertIn("modelo nulo (5x)", saida)
+        self.assertIn("z ≤ −2", saida)
+
+    def test_diz_em_voz_alta_quando_esta_desligado(self):
+        saida = self.analyze(null=0)
+        self.assertIn("DESLIGADO", saida)
+        self.assertIn("não é comparável", saida)
+
+
+class TestMigracaoPendente(unittest.TestCase):
+    def test_detecta_schema_atrasado(self):
+        """Coluna nova que só é LIDA some em silêncio num schema velho, e o
+        comando parece ter funcionado."""
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parcial = Path(tmp) / "migracoes"
+            parcial.mkdir()
+            todas = sorted((ROOT / "migrations").glob("*.sql"))
+            for arquivo in todas[:-1]:
+                shutil.copy(arquivo, parcial / arquivo.name)
+
+            conn = db.connect(Path(tmp) / "velho.db")
+            db.migrate(conn, parcial)
+            pendentes = db.pending_migrations(conn, ROOT / "migrations")
+            self.assertEqual(len(pendentes), 1)
+            self.assertEqual(db.pending_migrations(conn, parcial), [])
+
+            db.migrate(conn, ROOT / "migrations")
+            self.assertEqual(db.pending_migrations(conn, ROOT / "migrations"), [])
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
