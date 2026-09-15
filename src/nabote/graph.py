@@ -388,10 +388,9 @@ def imported_partition(
     return {a: lookup[a] for a in actor_ids if a in lookup}
 
 
-# Abaixo disto, duas comunidades não são "a mesma vista duas vezes": são
-# comunidades diferentes que por acaso compartilham gente. O corte é sobre a
-# CONTENÇÃO, não sobre o Jaccard — ver `match_communities`.
-MATCH_MIN_OVERLAP = 0.5
+# Abaixo desta fatia dos membros de A, o par é ruído: um punhado de gente que
+# caiu junto por acaso, não a mesma comunidade vista duas vezes.
+MATCH_MIN_SHARE = 0.01
 
 
 def match_communities(
@@ -435,24 +434,29 @@ def match_communities(
             com_b = onde.get(actor)
             if com_b is not None:
                 contagem[com_b] = contagem.get(com_b, 0) + 1
-        melhor, comum, overlap = None, 0, 0.0
+        # Escolha por INTERSEÇÃO BRUTA, e as razões só na leitura.
+        #
+        # Custou duas tentativas erradas. Jaccard pune diferença de tamanho, e
+        # entre visões a diferença é cobertura, não discordância: a comunidade
+        # importada é subconjunto da original, e 4.164 em 34.165 dava 0,12 —
+        # "sem par" para membros literalmente iguais. Trocar por contenção
+        # inverteu o erro: dividindo pelo menor, uma comunidade de 3 atores
+        # dentro de uma de 26 mil dá 1,00, e o ruído vira casamento perfeito.
+        #
+        # Interseção bruta não se deixa enganar por nenhum dos dois: quem
+        # compartilha mais gente de verdade vence. As razões viajam na saída,
+        # onde quem lê julga — 3 de 26.386 se denuncia sozinho.
+        melhor, comum = None, 0
         for com_b, n in contagem.items():
-            # CONTENÇÃO, não Jaccard: a fatia do menor dos dois que está no
-            # outro. Jaccard pune diferença de tamanho, e diferença de tamanho
-            # aqui é normal, não discordância — o grafo de respostas cobre uma
-            # fração do de amplificação, então uma comunidade inteira contida em
-            # outra dava Jaccard 0,12 e era declarada "sem par", quando a
-            # partição tinha sido importada e os membros eram os mesmos.
-            o = n / min(len(membros), len(b[com_b]))
-            if o > overlap:
-                melhor, comum, overlap = com_b, n, o
+            if n > comum:
+                melhor, comum = com_b, n
         n_b = len(b[melhor]) if melhor is not None else 0
         linhas.append({
-            "a": com_a, "b": melhor, "overlap": overlap,
-            # Jaccard viaja junto porque separa "contida" de "igual": contenção
-            # 1,0 com Jaccard 0,12 quer dizer que B é um pedaço pequeno de A.
+            "a": com_a, "b": melhor, "n_a": len(membros), "n_b": n_b,
+            "comum": comum,
+            "share_a": comum / len(membros) if membros else 0.0,
+            "share_b": comum / n_b if n_b else 0.0,
             "jaccard": comum / (len(membros) + n_b - comum) if comum else 0.0,
-            "n_a": len(membros), "n_b": n_b, "comum": comum,
         })
     return linhas
 

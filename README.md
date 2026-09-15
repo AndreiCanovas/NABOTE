@@ -341,21 +341,27 @@ O casamento é por **sobreposição de membros**, nunca por número de comunidad
 numeração é por tamanho dentro do recorte, então "#0" de uma semana não é "#0"
 da seguinte, e uma tabela alinhada por número sairia plausível e falsa.
 
-Duas colunas, porque uma só engana:
+O par é escolhido por **interseção bruta** — quem compartilha mais gente de
+verdade. As razões aparecem na saída, não na escolha:
 
 | coluna | o que é |
 | --- | --- |
-| `contido` | fatia do **menor** dos dois que está no outro — é por ela que o par é escolhido |
-| `jaccard` | semelhança simétrica |
+| `comum` | atores presentes nos dois |
+| `do A` | que fatia de A eles são |
+| `do B` | que fatia de B eles são |
+| `jacc` | semelhança simétrica |
 
-`contido` 1,00 com `jaccard` baixo quer dizer que B é um **pedaço** de A, não
-outra comunidade. É o caso normal ao comparar visões: o grafo de respostas cobre
-uma fração do de amplificação, então a comunidade importada é um subconjunto da
-original. Casar por Jaccard ali dava 0,12 e declarava "sem par" duas comunidades
-cujos membros eram literalmente os mesmos — diferença de tamanho era cobertura,
-não discordância.
+`do B` 100% com `do A` baixo é **cobertura, não discordância**: B é uma amostra
+de A. É o caso normal ao comparar visões, porque o grafo de respostas cobre uma
+fração do de amplificação.
 
-Comunidade de A cuja contenção em B fica abaixo de 50% aparece sem par.
+Duas medidas foram testadas e descartadas contra dado real, cada uma errando
+para um lado: **Jaccard** pune diferença de tamanho, e declarou "sem par"
+comunidades cujos membros eram literalmente os mesmos (4.164 em 34.165 = 0,12).
+**Contenção**, dividindo pelo menor, premia o inverso: três atores dentro de uma
+comunidade de 26 mil davam 1,00, e ruído virava casamento perfeito. Interseção
+bruta não se deixa enganar por nenhum dos dois, e três de 26.386 se denuncia
+sozinho na tela.
 
 ### Exportação (passo 4)
 
@@ -388,7 +394,7 @@ não leu a conversa, e número sem ressalva vira slide.
 python3 -m unittest discover -s tests
 ```
 
-198 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+200 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

@@ -762,7 +762,7 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         self.conn.executemany(
             "INSERT INTO actor (platform, platform_user_id, tier, first_seen_at, "
             "last_seen_at) VALUES ('x', ?, 'C', ?, ?)",
-            [(f"u{i}", agora, agora) for i in range(1, 31)])
+            [(f"u{i}", agora, agora) for i in range(1, 251)])
 
     def tearDown(self):
         self.conn.close()
@@ -772,7 +772,8 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         self.conn.executemany(
             "INSERT INTO actor_community (actor_id, window_start, scope, "
             "community_id) VALUES (?,?,?,?)",
-            [(a, window, scope, com) for com, atores in grupos.items() for a in atores])
+            [(a, window, scope, com) for com, atores in grupos.items()
+             for a in atores])
 
     def test_casa_apesar_da_renumeracao(self):
         """Mesmos atores, números TROCADOS entre os dois recortes. Casar por
@@ -781,7 +782,7 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         self._planta("2023-01-30", "amp", {0: range(21, 31), 1: range(1, 21)})
         linhas = graph.match_communities(self.conn, "2023-01-23", "amp",
                                          "2023-01-30", "amp")
-        pares = {l["a"]: (l["b"], round(l["overlap"], 3)) for l in linhas}
+        pares = {l["a"]: (l["b"], round(l["share_a"], 3)) for l in linhas}
         self.assertEqual(pares, {0: (1, 1.0), 1: (0, 1.0)})
 
     def test_subconjunto_nao_e_comunidade_diferente(self):
@@ -799,7 +800,8 @@ class TestCasamentoDeComunidades(unittest.TestCase):
             self.conn, "2023-01-23", "amp:core",
             "2023-01-23", "reply@amp:core")[0]
         self.assertEqual(linha["b"], 0)
-        self.assertEqual(linha["overlap"], 1.0, "B inteiro está dentro de A")
+        self.assertEqual(linha["share_b"], 1.0, "B inteiro está dentro de A")
+        self.assertLess(linha["share_a"], 0.2, "e A é muito maior — isso é cobertura")
         self.assertLess(linha["jaccard"], 0.2, "e o Jaccard chamaria de par fraco")
 
     def test_jaccard_separa_contida_de_igual(self):
@@ -809,7 +811,8 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         self._planta("2023-01-30", "amp", {0: range(1, 31)})
         igual = graph.match_communities(self.conn, "2023-01-23", "amp",
                                         "2023-01-30", "amp")[0]
-        self.assertEqual(igual["overlap"], 1.0)
+        self.assertEqual(igual["share_a"], 1.0)
+        self.assertEqual(igual["share_b"], 1.0)
         self.assertEqual(igual["jaccard"], 1.0)
 
     def test_particao_identica_da_jaccard_um(self):
@@ -821,7 +824,7 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         for linha in graph.match_communities(
                 self.conn, "2023-01-23", "amp:core", "2023-01-23", "reply@amp:core"):
             self.assertEqual(linha["a"], linha["b"])
-            self.assertEqual(linha["overlap"], 1.0)
+            self.assertEqual(linha["share_a"], 1.0)
             self.assertEqual(linha["jaccard"], 1.0)
 
     def test_sem_par_devolve_none(self):
@@ -830,20 +833,19 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         linha = graph.match_communities(self.conn, "2023-01-23", "amp",
                                         "2023-01-30", "amp")[0]
         self.assertIsNone(linha["b"])
-        self.assertEqual(linha["overlap"], 0.0)
+        self.assertEqual(linha["comum"], 0)
         self.assertEqual(linha["jaccard"], 0.0)
 
     def test_sobreposicao_parcial_escolhe_o_maior(self):
-        """Com dois candidatos, vence o de maior CONTENÇÃO — não o de maior
-        interseção bruta, que favoreceria sempre a comunidade grande."""
+        """Com dois candidatos, vence quem compartilha mais gente de verdade."""
         self._planta("2023-01-23", "amp", {0: range(1, 11)})
         self._planta("2023-01-30", "amp", {
-            0: range(1, 7),        # 6 em comum, contenção 6/6 = 1,00
-            1: range(7, 31)})      # 4 em comum, contenção 4/10 = 0,40
+            0: range(1, 7),        # 6 atores em comum
+            1: range(7, 31)})      # 4 atores em comum
         linha = graph.match_communities(self.conn, "2023-01-23", "amp",
                                         "2023-01-30", "amp")[0]
         self.assertEqual(linha["b"], 0)
-        self.assertAlmostEqual(linha["overlap"], 1.0)
+        self.assertEqual(linha["comum"], 6)
 
     def test_ordena_da_maior_para_a_menor(self):
         self._planta("2023-01-23", "amp", {0: range(1, 6), 1: range(6, 26)})
@@ -851,6 +853,37 @@ class TestCasamentoDeComunidades(unittest.TestCase):
         tamanhos = [l["n_a"] for l in graph.match_communities(
             self.conn, "2023-01-23", "amp", "2023-01-30", "amp")]
         self.assertEqual(tamanhos, sorted(tamanhos, reverse=True))
+
+
+    def test_comunidade_minuscula_nao_casa_com_gigante(self):
+        """O erro que a contenção introduziu, fixado em teste.
+
+        Dividindo pelo menor dos dois, três atores dentro de uma comunidade de
+        26 mil davam contenção 1,00 — ruído virando casamento perfeito. Foi o
+        que apareceu no dado real ao comparar semanas.
+        """
+        self._planta("2023-01-23", "amp", {0: range(1, 26)})
+        self._planta("2023-01-30", "amp", {
+            0: range(1, 3),                    # 2 atores, contenção 2/2 = 1,00
+            1: list(range(3, 21)) + list(range(200, 231))})  # 18 comuns de 49
+        linha = graph.match_communities(self.conn, "2023-01-23", "amp",
+                                        "2023-01-30", "amp")[0]
+        self.assertEqual(linha["b"], 1, "deveria casar com quem compartilha mais")
+        self.assertEqual(linha["comum"], 18)
+
+    def test_as_duas_fatias_separam_cobertura_de_ruido(self):
+        """'do B' 100% sozinho não diz nada: vale tanto para uma amostra
+        legítima quanto para três atores por acaso. É 'do A' que separa."""
+        self._planta("2023-01-23", "amp", {0: range(1, 101), 1: range(101, 201)})
+        self._planta("2023-01-30", "amp", {0: range(1, 61),   # 60% de A
+                                           1: range(101, 103)})  # 2% de A
+        linhas = {l["a"]: l for l in graph.match_communities(
+            self.conn, "2023-01-23", "amp", "2023-01-30", "amp")}
+        cobertura, ruido = linhas[0], linhas[1]
+        self.assertEqual(cobertura["share_b"], 1.0)
+        self.assertEqual(ruido["share_b"], 1.0)
+        self.assertGreater(cobertura["share_a"], 0.5)
+        self.assertLess(ruido["share_a"], 0.05)
 
 
 class TestRelabel(unittest.TestCase):

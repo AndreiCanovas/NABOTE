@@ -243,9 +243,9 @@ def cmd_compare(args: argparse.Namespace) -> int:
         ma, mb = metricas(ja, ea), metricas(jb, eb)
         print(f"A = {ja}  {ea}")
         print(f"B = {jb}  {eb}\n")
-        print(f"{'A':>5}{'B':>7}{'contido':>9}{'jaccard':>9}{'atores A':>11}"
-              f"{'atores B':>11}{'E-I A':>9}{'E-I B':>9}{'salto':>9}")
-        print("-" * 80)
+        print(f"{'A':>5}{'B':>7}{'comum':>10}{'do A':>7}{'do B':>7}{'jacc':>7}"
+              f"{'atores A':>11}{'atores B':>11}{'E-I A':>9}{'E-I B':>9}{'salto':>9}")
+        print("-" * 92)
         mostradas = [l for l in linhas[:args.top]
                      if l["n_a"] >= args.min_community]
         for linha in mostradas:
@@ -254,29 +254,30 @@ def cmd_compare(args: argparse.Namespace) -> int:
             # `ei_choice` é o comparável; `ei_mean` anda junto do tamanho.
             va = ra["ei_choice"] if ra and ra["ei_choice"] is not None else None
             vb = rb["ei_choice"] if rb and rb["ei_choice"] is not None else None
-            fraco = linha["overlap"] < graph.MATCH_MIN_OVERLAP
-            if fraco:
+            ruido = linha["share_a"] < graph.MATCH_MIN_SHARE
+            if ruido:
                 vb = None
             # Formatação em variáveis, não em f-string aninhada: a versão
             # aninhada deixava um float cru escapar no ramo do par fraco.
-            alvo = "—" if linha["b"] is None or fraco else f"#{linha['b']}"
+            alvo = "—" if linha["b"] is None or ruido else f"#{linha['b']}"
             txt_a = "—" if va is None else f"{va:+.2f}"
             txt_b = "—" if vb is None else f"{vb:+.2f}"
             salto = "—" if va is None or vb is None else f"{vb - va:+.2f}"
-            n_b = 0 if fraco else linha["n_b"]
-            print(f"  #{linha['a']:<3}{alvo:>7}{linha['overlap']:>9.2f}"
-                  f"{linha['jaccard']:>9.2f}{linha['n_a']:>11,}{n_b:>11,}"
+            n_b = 0 if ruido else linha["n_b"]
+            print(f"  #{linha['a']:<3}{alvo:>7}{linha['comum']:>10,}"
+                  f"{linha['share_a']:>7.0%}{linha['share_b']:>7.0%}"
+                  f"{linha['jaccard']:>7.2f}{linha['n_a']:>11,}{n_b:>11,}"
                   f"{txt_a:>9}{txt_b:>9}{salto:>9}".replace(",", "."))
 
-        fracos = [l for l in mostradas if l["overlap"] < graph.MATCH_MIN_OVERLAP]
-        if fracos:
-            print(f"\n{len(fracos)} comunidade(s) de A sem par em B "
-                  f"(contenção < {graph.MATCH_MIN_OVERLAP:.0%}): "
-                  f"não são a mesma comunidade vista duas vezes.")
-        print("\ncontido = fatia do MENOR dos dois que está no outro · "
-              "jaccard = semelhança simétrica")
-        print("contido 1,00 com jaccard baixo: B é um pedaço de A, não outra "
-              "comunidade.")
+        ruidosos = [l for l in mostradas if l["share_a"] < graph.MATCH_MIN_SHARE]
+        if ruidosos:
+            print(f"\n{len(ruidosos)} comunidade(s) de A com par ruidoso "
+                  f"(menos de {graph.MATCH_MIN_SHARE:.0%} dos membros de A "
+                  f"foram parar nele).")
+        print("\ncomum = atores nos dois · do A / do B = que fatia de cada lado "
+              "eles são")
+        print("'do B' 100% com 'do A' baixo é COBERTURA, não discordância: "
+              "B é uma amostra de A.")
         return 0
     finally:
         conn.close()
