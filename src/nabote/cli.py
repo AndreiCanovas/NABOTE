@@ -223,9 +223,7 @@ def cmd_themes(args: argparse.Namespace) -> int:
         if not windows:
             print("nada a mostrar.", file=sys.stderr)
             return 1
-        scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
-        if getattr(args, "core", False):
-            scope += ":core"
+        scope = _escopo(args)
 
         for window in windows:
             todas = conn.execute(
@@ -315,6 +313,20 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _escopo(args: argparse.Namespace) -> str:
+    """Escopo analítico pedido, na gramática do schema.
+
+      <visão>                    grafo cheio
+      <visão>:topic:<id>         recortado por tópico
+      <visão>:core               só quem tem mais de uma aresta
+      <visão>@<escopo>           partição importada daquele escopo
+    """
+    if getattr(args, "partition", None):
+        return f"{args.view}@{args.partition}"
+    scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
+    return scope + ":core" if getattr(args, "core", False) else scope
+
+
 def _avisa_migracao(conn) -> None:
     """Schema velho faz comando novo mentir em silêncio. Avisa antes de rodar."""
     pendentes = db.pending_migrations(conn)
@@ -335,7 +347,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             return 1
         for window in windows:
             r = graph.analyze_window(conn, window, view=args.view,
-                                     edge_scope=args.scope, core=args.core)
+                                     edge_scope=args.scope, core=args.core,
+                                     partition_scope=args.partition)
             if not r["nodes"]:
                 print(f"{window}  vazio para a visão {args.view}")
                 continue
@@ -363,6 +376,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             # ENTRADA e pode nunca ter amplificado ninguém. O que a força ≥ 2
             # garante é mais de uma aresta, logo mais de uma chance de
             # atravessar para outra comunidade.
+            if r.get("sem_particao"):
+                print(f"{'':12}  {r['sem_particao']} atores deste grafo não estão "
+                      f"na partição importada e ficaram de fora")
             print(f"{'':12}  E-I com escolha: {atores} de {todos} atores "
                   f"({atores / todos:.0%}) têm mais de uma aresta, "
                   f"em {linha['n']} de {r['communities']} comunidades")
@@ -407,9 +423,7 @@ def cmd_dump(args: argparse.Namespace) -> int:
             print("nada a mostrar.", file=sys.stderr)
             return 1
         window = windows[-1]
-        scope = args.view if args.scope == "all" else f"{args.view}:{args.scope}"
-        if getattr(args, "core", False):
-            scope += ":core"
+        scope = _escopo(args)
 
         head = conn.execute(
             "SELECT COUNT(*) AS n FROM actor_metric WHERE window_start=? AND scope=?",
@@ -577,9 +591,11 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                               "author_tier": "A", "no_resume": False}),
         ("aggregate", cmd_aggregate, {"window": None, "all": True, "scope": "all"}),
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
-                                  "view": args.view, "core": False}),
+                                  "view": args.view, "core": False,
+                                  "partition": None}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
                             "min_community": 1, "community": None, "core": False,
+                            "partition": None,
                             "view": args.view, "top": args.top}),
     ]
     for name, func, extra in steps:
@@ -816,6 +832,13 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--view", default=graph.DEFAULT_VIEW, choices=sorted(graph.VIEWS),
                            help="amp = repost+citação (padrão) · reply = respostas")
         if com_core:
+            p.add_argument("--partition", metavar="ESCOPO", default=None,
+                           help="importa a partição deste escopo (ex.: amp:core) "
+                                "em vez de detectar comunidade aqui. Grava em "
+                                "<visão>@<escopo>. É a única forma correta de "
+                                "comparar visões: o Leiden no grafo de respostas "
+                                "inventa comunidades próprias, sem relação com "
+                                "as do grafo de amplificação")
             p.add_argument("--core", action="store_true",
                            help="só atores com mais de uma aresta, podados até o "
                                 "ponto fixo. Grava em <visão>:core, ao lado da "

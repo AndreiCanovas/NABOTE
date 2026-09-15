@@ -201,6 +201,23 @@ def hub_audience_graph(sizes: list[int], external_fraction: float = 0.05,
     return g
 
 
+def extra_replies(community: int, target_community: int, indices: list[int],
+                  tag: str = "x") -> list[dict[str, Any]]:
+    """Respostas adicionais de uma comunidade para outra.
+
+    Serve para DESBALANCEAR os tamanhos no grafo de respostas. Com comunidades
+    de tamanhos iguais, renumerar por tamanho é a identidade, e um teste de
+    preservação de numeração passa sem testar nada.
+    """
+    events = []
+    clock = BASE_TIME_US + 2 * DAY_US
+    for k, index in enumerate(indices):
+        clock += 1_000
+        events.append(_reply(did(community, index), did(target_community, 0),
+                             clock, f"{tag}{k:05d}"))
+    return events
+
+
 def write_jsonl(events: list[dict[str, Any]], path) -> None:
     import json
     from pathlib import Path

@@ -214,6 +214,34 @@ embaralhado, uma partição com E-I −1,0000 exato e desvio 0,00000. O nulo sat
 o z ou não existe ou explode. Também não serviu o excesso analítico sob modelo
 de configuração: ele troca a correlação de −0,49 por +1,00.
 
+#### Comparar visões: importar a partição, nunca recalcular
+
+`amp` e `reply` são grafos diferentes. Rodar o Leiden em cada um produz
+comunidades **próprias**: a "#7" de um não tem relação com a "#7" do outro, e
+comparar as duas listas lado a lado gera uma tabela plausível e sem sentido.
+
+A comparação certa define a comunidade por **quem você promove** (a visão `amp`)
+e mede o comportamento de resposta contra essa definição:
+
+```bash
+nabote analyze --view amp --core                      # define as comunidades
+nabote analyze --view reply --partition amp:core      # mede as respostas nelas
+nabote themes  --view reply --partition amp:core
+```
+
+O segundo grava em `reply@amp:core` — a visão `reply` medida sobre a partição de
+`amp:core`. A leitura:
+
+| amp | reply | o que é |
+| --- | --- | --- |
+| fechada | fechada | clube isolado: não briga, só não sai |
+| fechada | **aberta** | polarização: promove os seus, discute com os outros |
+| aberta | aberta | não é bloco |
+
+Atores do grafo de respostas que não estão na partição ficam de fora, e o
+`analyze` diz quantos: número alto significa que os dois grafos mal se
+sobrepõem e a comparação não se sustenta.
+
 #### Alcance e fechamento são duas análises
 
 No dado real **71% a 79% dos atores aparecem com uma aresta só**. Isso não é
@@ -265,7 +293,7 @@ O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 python3 -m unittest discover -s tests
 ```
 
-149 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+153 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

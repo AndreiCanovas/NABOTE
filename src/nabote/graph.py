@@ -342,27 +342,79 @@ def compute_metrics(graph: Any, membership: list[int]) -> dict[str, list[float]]
     return metrics
 
 
+def imported_partition(
+    conn: sqlite3.Connection, window_start: str, partition_scope: str,
+    actor_ids: list[int], graph_version: int = GRAPH_VERSION,
+) -> dict[int, int]:
+    """Comunidade de cada ator, vinda de OUTRO escopo já analisado.
+
+    Devolve {actor_id: community_id}, só para os atores que existem lá.
+    """
+    lookup = {r["actor_id"]: r["community_id"] for r in conn.execute(
+        "SELECT actor_id, community_id FROM actor_community "
+        "WHERE window_start=? AND scope=? AND graph_version=?",
+        (window_start, partition_scope, graph_version))}
+    return {a: lookup[a] for a in actor_ids if a in lookup}
+
+
 def analyze_window(
     conn: sqlite3.Connection, window_start: str, view: str = DEFAULT_VIEW,
     edge_scope: str = "all", graph_version: int = GRAPH_VERSION,
-    core: bool = False,
+    core: bool = False, partition_scope: str | None = None,
 ) -> dict[str, Any]:
     """Calcula e grava métricas e comunidades de uma janela.
 
     `core=True` roda tudo sobre o subgrafo de quem tem mais de uma aresta e
     grava sob o escopo `<view>:core`, ao lado do escopo cheio. As duas análises
     convivem: uma mede alcance, a outra mede fechamento.
+
+    `partition_scope` IMPORTA a partição de outro escopo em vez de detectar
+    comunidade neste grafo, e grava sob `<view>@<partition_scope>`.
+
+    Isso existe para uma pergunta específica e é a única forma correta de
+    fazê-la. Rodar o Leiden no grafo de respostas produz comunidades PRÓPRIAS,
+    sem relação com as do grafo de amplificação — a "#7" de um não é a "#7" do
+    outro. Comparar as duas listas lado a lado seria comparar coisas sem
+    relação, e a tabela sairia plausível e sem sentido.
+
+    O certo é definir a comunidade por QUEM VOCÊ PROMOVE (a visão `amp`) e medir
+    o comportamento de resposta contra essa definição:
+
+      fechada em amp + fechada em reply   clube isolado: não briga, só não sai
+      fechada em amp + ABERTA em reply    polarização: promove os seus,
+                                          discute com os outros
+      aberta nas duas                     não é bloco
+
+    Atores presentes neste grafo e ausentes da partição importada ficam de fora,
+    e a contagem deles volta em `sem_particao` — número alto significa que os
+    dois grafos mal se sobrepõem e a comparação não se sustenta.
     """
     scope = view if edge_scope == "all" else f"{view}:{edge_scope}"
     if core:
         scope += ":core"
     graph, actor_ids = load_graph(conn, window_start, view, edge_scope, core=core)
+    descartados = 0
+
+    if partition_scope:
+        importada = imported_partition(conn, window_start, partition_scope,
+                                       actor_ids, graph_version)
+        manter = [i for i, a in enumerate(actor_ids) if a in importada]
+        descartados = len(actor_ids) - len(manter)
+        actor_ids = [actor_ids[i] for i in manter]
+        graph = graph.subgraph(manter)
+        scope = f"{view}@{partition_scope}"
 
     if graph.vcount() == 0:
         return {"window_start": window_start, "scope": scope, "nodes": 0,
-                "edges": 0, "communities": 0, **component_stats(graph)}
+                "edges": 0, "communities": 0, "sem_particao": descartados,
+                **component_stats(graph)}
 
-    membership = detect_communities(graph)
+    if partition_scope:
+        # Renumerar aqui destruiria a correspondência com o escopo de origem:
+        # "#7" precisa continuar sendo a #7 de lá, senão a comparação mente.
+        membership = [importada[a] for a in actor_ids]
+    else:
+        membership = detect_communities(graph)
     metrics = compute_metrics(graph, membership)
 
     for table in ("actor_metric", "community", "actor_community"):
@@ -412,6 +464,7 @@ def analyze_window(
         "window_start": window_start, "scope": scope,
         "nodes": graph.vcount(), "edges": graph.ecount(),
         "communities": len(sizes), "metrics": sorted(metrics),
+        "sem_particao": descartados,
         **component_stats(graph),
         "computed_at": utcnow(),
     }

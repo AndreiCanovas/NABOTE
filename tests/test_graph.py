@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from nabote import db, graph, ingest  # noqa: E402
 from synthetic import (  # noqa: E402
-    ListSource, ambiguous_graph, block_graph, did, hub_audience_graph,
-    planted_communities, scattered_dyads)
+    ListSource, ambiguous_graph, block_graph, did, extra_replies,
+    hub_audience_graph, planted_communities, scattered_dyads)
 
 
 class TestWindow(unittest.TestCase):
@@ -622,6 +622,87 @@ class TestNucleo(unittest.TestCase):
         self.assertLess(nucleo["nodes"], cheio["nodes"], "as díades deveriam sair")
         self.assertGreater(nucleo["core_share"], cheio["core_share"])
         self.assertLess(nucleo["communities"], cheio["communities"])
+
+
+class TestParticaoImportada(GraphTestCase):
+    """Comparar visões exige importar a partição, não recalculá-la.
+
+    O gerador sintético planta as respostas CRUZANDO comunidades de propósito —
+    no mundo real quem mais responde um ator costuma ser quem discorda dele.
+    Com a partição do `amp`, essa travessia tem de aparecer como E-I positivo.
+    Rodar o Leiden no grafo de respostas produziria comunidades próprias, onde
+    as respostas voltariam a ser internas, e o achado sumiria.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # A comunidade 2 responde MUITO mais que as outras, de propósito: com
+        # tamanhos iguais no grafo de respostas, renumerar por tamanho seria a
+        # identidade e o teste de numeração passaria sem testar nada.
+        ingest.ingest(self.conn, ListSource(
+            extra_replies(2, 0, [4, 5, 6, 7]), "respostas_extra"), author_tier="A")
+        graph.aggregate_window(self.conn, self.window)
+        graph.analyze_window(self.conn, self.window, view="amp")
+
+    def test_amp_fechada_reply_aberta(self):
+        """A assinatura da polarização, plantada e recuperada: promove os seus,
+        responde os outros."""
+        amp = {r["community_id"]: r["ei_mean"] for r in self.conn.execute(
+            "SELECT community_id, ei_mean FROM community WHERE scope='amp'")}
+        resultado = graph.analyze_window(self.conn, self.window, view="reply",
+                                         partition_scope="amp")
+        reply = {r["community_id"]: r["ei_mean"] for r in self.conn.execute(
+            "SELECT community_id, ei_mean FROM community WHERE scope=?",
+            (resultado["scope"],))}
+
+        self.assertEqual(resultado["scope"], "reply@amp")
+        self.assertTrue(reply, "nenhuma comunidade medida na visão reply")
+        for community, valor in reply.items():
+            self.assertLess(amp[community], 0, f"#{community} deveria promover os seus")
+            self.assertGreater(valor, 0, f"#{community} deveria responder os outros")
+
+    def test_numeracao_e_a_mesma_do_escopo_de_origem(self):
+        """Renumerar destruiria a correspondência: '#7' precisa continuar sendo
+        a #7 de lá, senão a comparação entre visões mente."""
+        resultado = graph.analyze_window(self.conn, self.window, view="reply",
+                                         partition_scope="amp")
+        por_ator = {}
+        for escopo in ("amp", resultado["scope"]):
+            por_ator[escopo] = {r["platform_user_id"]: r["community_id"]
+                                for r in self.conn.execute(
+                "SELECT a.platform_user_id, c.community_id FROM actor_community c "
+                "JOIN actor a ON a.actor_id = c.actor_id WHERE c.scope=?", (escopo,))}
+        comuns = set(por_ator["amp"]) & set(por_ator[resultado["scope"]])
+        self.assertTrue(comuns, "os dois grafos não compartilham ator nenhum")
+        tamanhos = {}
+        for did_ in por_ator[resultado["scope"]]:
+            c = por_ator[resultado["scope"]][did_]
+            tamanhos[c] = tamanhos.get(c, 0) + 1
+        self.assertNotEqual(sorted(tamanhos, key=lambda c: -tamanhos[c]),
+                            sorted(tamanhos),
+                            "tamanhos em ordem de id: renumerar seria identidade "
+                            "e este teste não provaria nada")
+        for did_ in comuns:
+            self.assertEqual(por_ator["amp"][did_],
+                             por_ator[resultado["scope"]][did_])
+
+    def test_conta_quem_ficou_de_fora_da_particao(self):
+        """Se muita gente do grafo de respostas não está na partição, os dois
+        grafos mal se sobrepõem e a comparação não se sustenta. O número precisa
+        aparecer em vez de a ausência virar silêncio."""
+        graph.analyze_window(self.conn, self.window, view="amp", core=True)
+        resultado = graph.analyze_window(self.conn, self.window, view="reply",
+                                         partition_scope="amp:core")
+        self.assertIn("sem_particao", resultado)
+        self.assertGreaterEqual(resultado["sem_particao"], 0)
+
+    def test_escopos_nao_se_atropelam(self):
+        graph.analyze_window(self.conn, self.window, view="reply")
+        graph.analyze_window(self.conn, self.window, view="reply",
+                             partition_scope="amp")
+        escopos = {r["scope"] for r in self.conn.execute(
+            "SELECT DISTINCT scope FROM community")}
+        self.assertEqual(escopos, {"amp", "reply", "reply@amp"})
 
 
 class TestRelabel(unittest.TestCase):

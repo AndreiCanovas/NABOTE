@@ -45,7 +45,8 @@ class DumpTestCase(unittest.TestCase):
     def dump(self, **kwargs) -> str:
         args = argparse.Namespace(
             db=str(self.path), window=None, all=False, scope="all",
-            view="amp", top=10, min_community=1, community=None, core=False)
+            view="amp", top=10, min_community=1, community=None, core=False,
+            partition=None)
         for key, value in kwargs.items():
             setattr(args, key, value)
         buffer = io.StringIO()
@@ -278,7 +279,8 @@ class TestThemes(unittest.TestCase):
             graph.analyze_window(self.conn, w, view="amp")
         args = argparse.Namespace(
             db=str(self.path), window=window, all=False, scope="all",
-            view="amp", top=20, terms=5, min_community=5)
+            view="amp", top=20, terms=5, min_community=5, core=False,
+            partition=None)
         for key, value in kwargs.items():
             setattr(args, key, value)
         buffer = io.StringIO()
@@ -375,7 +377,7 @@ class TestAnalyzeReporta(unittest.TestCase):
 
     def analyze(self, null: int = 0) -> str:
         args = argparse.Namespace(db=str(self.path), window=None, all=True,
-                                  scope="all", view="amp", core=False)
+                                  scope="all", view="amp", core=False, partition=None)
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             self.assertEqual(cli.cmd_analyze(args), 0)
