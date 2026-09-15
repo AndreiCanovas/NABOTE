@@ -327,13 +327,38 @@ em modo editável: `pip install -e .` (aí o comando `nabote` fica disponível).
 
 O banco vive em `data/nabote.db` por padrão e **não é versionado**.
 
+### Exportação (passo 4)
+
+```bash
+nabote export --window 2023-01-23 --view amp --core --out relatorios/
+```
+
+Escreve em `relatorios/<janela>_<escopo>/`:
+
+| arquivo | conteúdo |
+| --- | --- |
+| `actors.csv` | um ator por linha, comunidade e todas as métricas em colunas, ordenado por PageRank |
+| `communities.csv` | uma comunidade por linha, com `ei_mean`, `ei_choice`, `choice_actors` e as pautas já resolvidas em texto |
+| `edges.csv` | arestas da visão pedida, restritas ao escopo |
+| `runs.csv` | procedência: qual coleta alimentou esta janela e com que volume |
+| `manifest.json` | janela, escopo, dias de coleta, termos, contagens e **as ressalvas** |
+
+CSV e não um formato esperto porque abre no Excel, no pandas e no R — o
+consumidor é um analista, não um sistema.
+
+O manifesto não é burocracia. Um CSV solto não diz de qual janela veio, de qual
+escopo, nem quantos dias de coleta o alimentaram; esta POC gastou três mensagens
+interpretando dados cuja procedência ninguém tinha verificado. E as ressalvas
+conhecidas do recorte viajam dentro dele, não no README: quem recebe o arquivo
+não leu a conversa, e número sem ressalva vira slide.
+
 ### Testes
 
 ```bash
 python3 -m unittest discover -s tests
 ```
 
-171 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
+185 testes, sem dependências e sem rede. Rodam também sob `pytest` se preferir.
 
 Os testes de ingestão rodam contra `tests/fixtures/jetstream_sintetico.jsonl`,
 que é **inventado à mão, não capturado**. Versionar posts reais de pessoas num

@@ -8,6 +8,7 @@ Neste passo só `init` e `status` existem; os demais entram na ordem da frente 0
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -148,6 +149,56 @@ def _windows(conn, args) -> list[str]:
     if not found:
         return []
     return found if args.all else found[-1:]
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Passo 4: do banco para arquivos que outra pessoa consegue usar."""
+    from . import export as exportador
+
+    conn = db.connect(args.db)
+    try:
+        _avisa_migracao(conn)
+        windows = _windows(conn, args)
+        if not windows:
+            print("nada a exportar.", file=sys.stderr)
+            return 1
+        scope = _escopo(args)
+        destino_base = Path(args.out)
+
+        for window in windows:
+            n = conn.execute(
+                "SELECT COUNT(*) AS n FROM actor_metric WHERE window_start=? AND scope=?",
+                (window, scope)).fetchone()["n"]
+            if not n:
+                print(f"{window}: sem métricas para scope={scope}. "
+                      f"Rode `analyze` antes.", file=sys.stderr)
+                continue
+
+            destino = destino_base / f"{window}_{scope.replace(':', '-').replace('@', '-em-')}"
+            destino.mkdir(parents=True, exist_ok=True)
+
+            contagens = {
+                "actors": exportador.export_actors(conn, window, scope, destino),
+                "communities": exportador.export_communities(
+                    conn, window, scope, destino),
+                "edges": exportador.export_edges(
+                    conn, window, args.scope, destino,
+                    kinds=list(graph.VIEWS[args.view]),
+                    apenas_de=scope if ":core" in scope else None),
+                "runs": exportador.export_runs(conn, window, destino),
+            }
+            manifesto = exportador.manifest(conn, window, scope, contagens)
+            (destino / "manifest.json").write_text(
+                json.dumps(manifesto, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+
+            print(f"{destino}/")
+            for nome, quantos in contagens.items():
+                print(f"  {nome + '.csv':<20}{quantos:>8,} linhas".replace(",", "."))
+            print(f"  {'manifest.json':<20}{len(manifesto['ressalvas']):>8} ressalvas")
+        return 0
+    finally:
+        conn.close()
 
 
 def cmd_runs(args: argparse.Namespace) -> int:
@@ -983,6 +1034,11 @@ def build_parser() -> argparse.ArgumentParser:
     th.add_argument("--min-community", type=int, default=50, metavar="N",
                     help="ignora comunidades com menos de N atores (padrão: 50)")
 
+    ex = _janela(sub.add_parser("export", help="passo 4: CSVs e manifesto"),
+                 com_view=True, com_core=True)
+    ex.add_argument("--out", default="export", metavar="DIR",
+                    help="diretório de saída (padrão: export/)")
+
     runs = sub.add_parser("runs", help="de onde veio cada aresta: termo por janela")
     runs.add_argument("--top", type=int, default=10,
                       help="termos por janela (padrão: 10)")
@@ -1055,7 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("--kind=campanha exige --campaign RÓTULO")
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
-            "themes": cmd_themes,
+            "themes": cmd_themes, "export": cmd_export,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)
