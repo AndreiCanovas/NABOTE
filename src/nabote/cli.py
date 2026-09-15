@@ -328,6 +328,90 @@ def cmd_radar(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_dossie(args: argparse.Namespace) -> int:
+    """Aprofundamento de UMA pauta, no escopo dedicado dela.
+
+    Não roda sozinho: o radar decide onde aprofundar. A diferença prática em
+    relação ao radar é o escopo — tudo aqui sai de `<visão>:topic:<pauta>`, um
+    grafo só com as interações daquela coleta.
+
+    A ordem importa e o comando a impõe: sem `aggregate --scope topic:<pauta>`
+    e `analyze --edge-scope topic:<pauta>` antes, o escopo está vazio e o
+    dossiê sairia com zeros em vez de erro.
+    """
+    from . import dossie as dossie_mod
+    from . import positions as pos_mod
+
+    conn = db.connect(args.db)
+    try:
+        _avisa_migracao(conn)
+        windows = _windows(conn, args)
+        if not windows:
+            print("nada a reportar.", file=sys.stderr)
+            return 1
+        window = windows[-1]
+        scope = dossie_mod.topic_scope(args.view, args.topic, core=not args.no_core)
+        edge_scope = graph.edge_scope_of(scope)
+
+        if not conn.execute(
+            "SELECT 1 FROM edge_window WHERE window_start=? AND scope=? LIMIT 1",
+            (window, edge_scope)).fetchone():
+            print(f"{window}: escopo de arestas {edge_scope} vazio. "
+                  f"Rode `aggregate --window {window} --scope {edge_scope}`.",
+                  file=sys.stderr)
+            return 1
+        if not conn.execute(
+            "SELECT 1 FROM community WHERE window_start=? AND scope=? LIMIT 1",
+            (window, scope)).fetchone():
+            print(f"{window}: sem análise em scope={scope}. Rode "
+                  f"`analyze --window {window} --view {args.view} "
+                  f"--edge-scope {edge_scope}"
+                  f"{'' if args.no_core else ' --core'}`.", file=sys.stderr)
+            return 1
+
+        anterior = None
+        if not args.sem_delta:
+            todas = graph.windows_present(conn)
+            if window in todas and todas.index(window) > 0:
+                candidata = todas[todas.index(window) - 1]
+                if conn.execute(
+                    "SELECT 1 FROM actor_position WHERE window_start=? AND scope=? LIMIT 1",
+                    (candidata, scope)).fetchone():
+                    anterior = candidata
+
+        eixo = pos_mod.compute_positions(conn, window, scope, view=args.view)
+        print(f"eixo: {eixo['atores']} atores posicionados sobre {eixo['alvos']} alvos "
+              f"({eixo['descartados']} sem escolha ficaram de fora), "
+              f"inércia {eixo['inercia']:.4f}, {eixo['iteracoes']} iterações",
+              file=sys.stderr)
+
+        saida = dossie_mod.snapshot(conn, window, args.topic, view=args.view,
+                                    core=not args.no_core, top=args.top,
+                                    mapa_top=args.mapa, janela_anterior=anterior)
+        sub = saida["subpautas"]
+        if not sub["posts_com_texto"]:
+            print(f"aviso: 0 de {sub['posts']} posts têm texto no banco — a seção "
+                  f"de sub-pautas sai vazia.", file=sys.stderr)
+        co = saida["coamplificacao"]
+        if co["grupos_ignorados"]:
+            print(f"coamplificação: {co['grupos_ignorados']} alvo(s) acima de "
+                  f"{co['grupo_max']} amplificações foram excluídos por viralidade",
+                  file=sys.stderr)
+
+        texto = json.dumps(saida, ensure_ascii=False,
+                           indent=None if args.compact else 2)
+        if args.out:
+            Path(args.out).write_text(texto + "\n", encoding="utf-8")
+            print(f"{args.out}  pauta {args.topic}  {len(saida['atores'])} atores, "
+                  f"{len(saida['comunidades'])} comunidades, "
+                  f"{len(sub['linhas'])} sub-pautas")
+        else:
+            print(texto)
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_runs(args: argparse.Namespace) -> int:
     """De onde veio cada aresta do grafo.
 
@@ -1247,6 +1331,21 @@ def build_parser() -> argparse.ArgumentParser:
     rd.add_argument("--out", metavar="ARQUIVO", help="grava em arquivo em vez da tela")
     rd.add_argument("--compact", action="store_true", help="JSON numa linha só")
 
+    ds = _janela(sub.add_parser("dossie", help="aprofundamento de uma pauta, em JSON"),
+                 com_view=True)
+    ds.add_argument("--topic", required=True, metavar="PAUTA",
+                    help="rótulo da pauta, como aparece em `runs`")
+    ds.add_argument("--top", type=int, default=12, metavar="N",
+                    help="atores na tabela de influência (padrão: 12)")
+    ds.add_argument("--mapa", type=int, default=60, metavar="N",
+                    help="nós no mapa da rede (padrão: 60)")
+    ds.add_argument("--no-core", action="store_true",
+                    help="usa o grafo cheio da pauta em vez do núcleo")
+    ds.add_argument("--sem-delta", action="store_true",
+                    help="não procura a janela anterior para o Δ do eixo")
+    ds.add_argument("--out", metavar="ARQUIVO", help="grava em arquivo em vez da tela")
+    ds.add_argument("--compact", action="store_true", help="JSON numa linha só")
+
     cp = sub.add_parser("compare", help="duas análises lado a lado")
     cp.add_argument("a", metavar="JANELA:ESCOPO",
                     help="ex.: 2023-01-23:amp:core")
@@ -1331,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
     return {"init": cmd_init, "status": cmd_status, "fetch": cmd_fetch,
             "aggregate": cmd_aggregate, "analyze": cmd_analyze, "runs": cmd_runs,
             "themes": cmd_themes, "export": cmd_export,
-            "compare": cmd_compare, "radar": cmd_radar,
+            "compare": cmd_compare, "radar": cmd_radar, "dossie": cmd_dossie,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)

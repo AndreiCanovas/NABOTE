@@ -101,6 +101,7 @@ nabote fetch --global           # firehose inteiro, sem filtro (só para ver o f
 nabote aggregate --all          # interaction → edge_window
 nabote analyze --all --view amp # comunidades, PageRank, E-I
 nabote dump --view amp --top 20 # dump cru, para depuração
+nabote dossie --topic X          # aprofundamento de uma pauta, em JSON
 
 # sem rede, com a fixture sintética:
 nabote fetch --fixture tests/fixtures/jetstream_sintetico.jsonl --author-tier A
@@ -356,6 +357,37 @@ descrever uma pauta.
 `radar` reúne num JSON só o que o relatório recorrente pede: volume, autores e
 concentração por pauta, por quantas comunidades ela circula e qual domina, os
 atores centrais dentro dela, e as comunidades com fatia de volume e pautas.
+
+### Dossiê — aprofundamento de uma pauta
+
+```bash
+nabote aggregate --window 2023-01-23 --scope topic:Yanomami
+nabote analyze   --window 2023-01-23 --view amp --edge-scope topic:Yanomami --core
+nabote dossie    --window 2023-01-23 --topic Yanomami --out dossie.json
+```
+
+O radar decide onde aprofundar; o dossiê aprofunda. Tudo sai do escopo
+`amp:topic:<pauta>:core` — um grafo só com as interações daquela coleta —, e o
+comando recusa rodar se o escopo não existir, em vez de devolver zeros.
+
+Quatro coisas existem só aqui:
+
+| | o que é | limite declarado |
+|---|---|---|
+| **mapa** | subgrafo dos N mais centrais, layout determinístico | diz quantos nós ficaram de fora e que fatia do peso ele cobre |
+| **eixo** | análise de correspondência sobre a matriz de amplificação | só para quem amplificou ≥ 2 contas; o sinal é convenção, não achado |
+| **coamplificação** | pares que amplificaram o mesmo alvo em ≤ 60 s | a chave é o ator alvo, não o post; viralidade em massa é excluída e contada |
+| **sub-pautas** | n-gramas que cada comunidade usa desproporcionalmente | `lift` = P(termo\|comunidade) / P(termo); exige `post.text` no banco |
+
+O eixo não usa numpy: a primeira dimensão sai por iteração de potência com
+deflação do par singular trivial, que é O(arestas) por passo. Sem a deflação a
+conta converge para a dimensão que ordena por TAMANHO, e a tabela sai plausível
+medindo volume em vez de posição — é o que `test_nao_e_so_tamanho_disfarcado`
+existe para impedir.
+
+As sub-pautas usam poda progressiva (só monta trigrama cujos bigramas passaram
+no corte). Sem ela, um corpus de 143 mil posts gera milhões de n-gramas
+distintos e o processo morre por memória; com ela são 6 s e 152 MB.
 
 ### Comparar dois recortes
 

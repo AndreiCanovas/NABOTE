@@ -122,6 +122,25 @@ def topics_in_window(conn: sqlite3.Connection, window_start: str) -> list[str]:
         """, (window_start, end))]
 
 
+CORE_SUFFIX = ":core"
+
+
+def edge_scope_of(scope: str) -> str:
+    """Inverso da composição feita em `analyze_window`: escopo analítico → escopo de arestas.
+
+    `amp` e `amp:core` leem as arestas de `all`; `amp:topic:X` e
+    `amp:topic:X:core` leem de `topic:X`. Esta função mora colada à linha que
+    compõe o nome porque as duas precisam mudar juntas — separadas, a primeira
+    vez que o formato mudar uma delas passa a ler o grafo errado em silêncio.
+    """
+    resto = scope.split(":", 1)[1] if ":" in scope else ""
+    if resto.endswith(CORE_SUFFIX):
+        resto = resto[: -len(CORE_SUFFIX)]
+    elif resto == "core":
+        resto = ""
+    return resto or "all"
+
+
 def aggregate_window(
     conn: sqlite3.Connection, window_start: str, scope: str = "all"
 ) -> int:
