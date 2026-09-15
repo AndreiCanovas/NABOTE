@@ -158,8 +158,9 @@ class TestQuemNaoTemPosicao(EixoTestCase):
     def test_grafo_sem_escolha_nenhuma_devolve_vazio_em_vez_de_inventar(self):
         matriz = {(1, 100): 3.0, (2, 200): 5.0, (3, 300): 1.0}
         self.assertEqual(positions._podar(matriz), {})
-        saida = positions._dimensao_1({})
-        self.assertEqual(saida[0], {})
+        escores, diag = positions._dimensao_1({})
+        self.assertEqual(escores, {})
+        self.assertFalse(diag["convergiu"])
 
 
 class TestMatrizConhecida(unittest.TestCase):
@@ -180,8 +181,9 @@ class TestMatrizConhecida(unittest.TestCase):
         matriz[(99, 101)] = 2.0        # atravessador: um pé em cada lado
         matriz[(99, 201)] = 2.0
 
-        escores, inercia, _ = positions._dimensao_1(matriz)
-        self.assertGreater(inercia, 0.0)
+        escores, diag = positions._dimensao_1(matriz)
+        self.assertGreater(diag["inercia"], 0.0)
+        self.assertTrue(diag["convergiu"], "não convergiu num caso trivial")
         esq = sum(escores[i] for i in range(1, 9)) / 8
         dir_ = sum(escores[i] for i in range(9, 17)) / 8
         self.assertLess(esq * dir_, 0, "as metades não ficaram em lados opostos")
@@ -192,9 +194,111 @@ class TestMatrizConhecida(unittest.TestCase):
         """Matriz sem estrutura: toda linha com o mesmo perfil de coluna. A
         primeira dimensão não trivial não tem o que separar."""
         matriz = {(i, j): 1.0 for i in range(1, 9) for j in (101, 102, 103)}
-        _, inercia, _ = positions._dimensao_1(matriz)
-        self.assertLess(inercia, 1e-6, f"inventou estrutura onde não há: {inercia}")
+        _, diag = positions._dimensao_1(matriz)
+        self.assertLess(diag["inercia"], 1e-6,
+                        f"inventou estrutura onde não há: {diag['inercia']}")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConvergencia(unittest.TestCase):
+    """O diagnóstico que faltava: bater no teto e convergir davam o mesmo número.
+
+    Na base real a S03 gastou as 300 iterações do teto e reportou "300
+    iterações", exatamente como reportaria se tivesse convergido na 300ª. O
+    relatório receberia um vetor não convergido sem nenhuma marca.
+    """
+
+    def _matriz_facil(self):
+        m = {}
+        for i in range(1, 9):
+            m[(i, 101)] = 3.0
+            m[(i, 102)] = 2.0
+        for i in range(9, 17):
+            m[(i, 201)] = 3.0
+            m[(i, 202)] = 2.0
+        m[(99, 101)] = 2.0
+        m[(99, 201)] = 2.0
+        return m
+
+    def test_caso_facil_converge_e_diz_que_convergiu(self):
+        _, diag = positions._dimensao_1(self._matriz_facil())
+        self.assertTrue(diag["convergiu"])
+        self.assertLess(diag["iteracoes"], positions.MAX_ITER)
+        self.assertLess(diag["residuo"], positions.TOL)
+
+    def test_teto_baixo_e_reportado_como_nao_convergido(self):
+        original = positions.MAX_ITER
+        positions.MAX_ITER = 2
+        try:
+            _, diag = positions._dimensao_1(self._matriz_facil())
+        finally:
+            positions.MAX_ITER = original
+        self.assertFalse(diag["convergiu"], "bateu no teto e disse que convergiu")
+        self.assertEqual(diag["iteracoes"], 2)
+
+    def test_fatia_da_inercia_e_uma_fracao_da_inercia_total(self):
+        """σ₁² sozinho não diz se a dimensão 1 explica muito ou pouco. A fatia
+        precisa do denominador, que é χ²/N."""
+        _, diag = positions._dimensao_1(self._matriz_facil())
+        self.assertGreater(diag["inercia_total"], 0.0)
+        self.assertLessEqual(diag["inercia"], diag["inercia_total"] + 1e-9)
+        self.assertAlmostEqual(diag["fatia_inercia"],
+                               diag["inercia"] / diag["inercia_total"], places=9)
+        self.assertLessEqual(diag["fatia_inercia"], 1.0 + 1e-9)
+
+    def test_inercia_total_bate_com_a_definicao_direta(self):
+        """χ²/N calculado célula a célula, sem o atalho Σa²−1."""
+        m = self._matriz_facil()
+        total = sum(m.values())
+        linhas = sorted({i for i, _ in m})
+        colunas = sorted({j for _, j in m})
+        r = {i: sum(w for (a, _), w in m.items() if a == i) / total for i in linhas}
+        c = {j: sum(w for (_, b), w in m.items() if b == j) / total for j in colunas}
+        direto = 0.0
+        for i in linhas:
+            for j in colunas:
+                p = m.get((i, j), 0.0) / total
+                esperado = r[i] * c[j]
+                direto += (p - esperado) ** 2 / esperado
+        _, diag = positions._dimensao_1(m)
+        self.assertAlmostEqual(diag["inercia_total"], direto, places=9)
+
+
+class TestFormaDoDiagnostico(unittest.TestCase):
+    """Os três caminhos de saída precisam das mesmas chaves.
+
+    O CLI lê eixo['residuo'] para avisar sobre não convergência; um caminho que
+    omite a chave derruba o comando com KeyError em vez de reportar o problema
+    — que foi exatamente o que aconteceu ao acrescentar o aviso.
+    """
+
+    ESPERADAS = set(positions.DIAG_VAZIO) | {
+        "scope", "atores", "alvos", "descartados", "decis", "fatia_no_meio"}
+
+    def _chaves(self, conn, window, scope):
+        return set(positions.compute_positions(conn, window, scope, persist=False))
+
+    def test_todos_os_retornos_tem_as_mesmas_chaves(self):
+        import tempfile
+        from nabote import db as dbmod, graph as gmod, ingest as imod
+        from synthetic import ListSource, planted_communities
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = dbmod.connect(Path(tmp) / "f.db")
+            dbmod.migrate(conn, ROOT / "migrations")
+            # caminho 1: escopo sem aresta nenhuma
+            vazio = self._chaves(conn, "2026-09-14", "amp:core")
+            self.assertEqual(vazio - {"ancoras"}, self.ESPERADAS)
+
+            eventos, _ = planted_communities(n_communities=2, per_community=14, seed=5)
+            imod.ingest(conn, ListSource(eventos, "b"), author_tier="A")
+            w = gmod.windows_present(conn)[0]
+            gmod.aggregate_window(conn, w)
+            gmod.analyze_window(conn, w, view="amp", core=True)
+            # caminho 2: solução de verdade
+            cheio = self._chaves(conn, w, "amp:core")
+            self.assertEqual(cheio - {"ancoras"}, self.ESPERADAS)
+            conn.close()

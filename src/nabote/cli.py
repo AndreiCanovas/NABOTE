@@ -381,9 +381,20 @@ def cmd_dossie(args: argparse.Namespace) -> int:
 
         eixo = pos_mod.compute_positions(conn, window, scope, view=args.view)
         print(f"eixo: {eixo['atores']} atores posicionados sobre {eixo['alvos']} alvos "
-              f"({eixo['descartados']} sem escolha ficaram de fora), "
-              f"inércia {eixo['inercia']:.4f}, {eixo['iteracoes']} iterações",
-              file=sys.stderr)
+              f"({eixo['descartados']} sem escolha ficaram de fora)", file=sys.stderr)
+        print(f"      dimensão 1 = {eixo['fatia_inercia']:.1%} da inércia "
+              f"(σ₁² {eixo['inercia']:.4f} de {eixo['inercia_total']:.4f}) · "
+              f"{eixo['iteracoes']} iterações", file=sys.stderr)
+        if not eixo["convergiu"] and eixo["atores"]:
+            resto = (f"resíduo {eixo['residuo']:.2e}, tolerância {pos_mod.TOL:.0e}"
+                     if eixo["residuo"] is not None else "sem solução")
+            print(f"      AVISO: não convergiu em {eixo['iteracoes']} iterações "
+                  f"({resto}). O eixo desta janela NÃO é comparável com o de outra.",
+                  file=sys.stderr)
+        if eixo.get("fatia_no_meio", 1.0) < 0.05:
+            print(f"      nota: só {eixo['fatia_no_meio']:.1%} dos atores caem entre "
+                  f"−0,25 e +0,25 — o eixo separa dois blocos, não é um contínuo.",
+                  file=sys.stderr)
 
         saida = dossie_mod.snapshot(conn, window, args.topic, view=args.view,
                                     core=not args.no_core, top=args.top,
@@ -393,10 +404,11 @@ def cmd_dossie(args: argparse.Namespace) -> int:
             print(f"aviso: 0 de {sub['posts']} posts têm texto no banco — a seção "
                   f"de sub-pautas sai vazia.", file=sys.stderr)
         co = saida["coamplificacao"]
-        if co["grupos_ignorados"]:
-            print(f"coamplificação: {co['grupos_ignorados']} alvo(s) acima de "
-                  f"{co['grupo_max']} amplificações foram excluídos por viralidade",
-                  file=sys.stderr)
+        print(f"coamplificação: {co['grupos'] - co['grupos_ignorados']} de "
+              f"{co['grupos']} alvos considerados "
+              f"({co['grupos_ignorados']} acima de {co['grupo_max']} amplificações "
+              f"ficaram de fora por viralidade) → {len(co['clusters'])} cluster(s)",
+              file=sys.stderr)
 
         texto = json.dumps(saida, ensure_ascii=False,
                            indent=None if args.compact else 2)
