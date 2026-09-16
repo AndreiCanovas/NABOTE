@@ -881,7 +881,7 @@ NOME_MAX = 38
 
 def suggest_labels(conn: sqlite3.Connection, window_start: str, scope: str,
                    subpautas: dict[str, Any] | None = None,
-                   persist: bool = True,
+                   persist: bool = True, sobrescrever: bool = False,
                    graph_version: int = GRAPH_VERSION) -> dict[int, dict[str, Any]]:
     """Propõe um nome para cada comunidade a partir do que ela diz e de quem ela é.
 
@@ -953,11 +953,28 @@ def suggest_labels(conn: sqlite3.Connection, window_start: str, scope: str,
         }
 
     if persist:
+        # NUNCA por cima de um nome já gravado, a menos que peçam.
+        #
+        # A nomeação manual é o passo que o formato do dossiê pressupõe, e a
+        # primeira versão destruía esse passo: `label --set` gravava "Governo —
+        # bancada e imprensa", a execução seguinte do dossiê rodava
+        # suggest_labels e devolvia "vasques · silvinei" por cima. O trabalho
+        # editorial sumia sem aviso, e a página saía com o nome automático que
+        # já se sabia enganoso.
+        onde = ("AND label IS NULL" if not sobrescrever else "")
         conn.executemany(
-            "UPDATE community SET label = ? WHERE window_start = ? AND scope = ? "
-            "AND community_id = ? AND graph_version = ?",
+            f"UPDATE community SET label = ? WHERE window_start = ? AND scope = ? "
+            f"AND community_id = ? AND graph_version = ? {onde}",
             [(v["nome"], window_start, scope, cid, graph_version)
              for cid, v in saida.items()])
+    # o que já estava gravado à mão continua sendo o nome que vale
+    gravados = labels_of(conn, window_start, scope, graph_version)
+    for cid, v in saida.items():
+        if gravados.get(cid) and gravados[cid] != v["nome"]:
+            v["proposto"] = v["nome"]
+            v["nome"] = gravados[cid]
+            v["origem"] = "manual"
+            v["aviso"] = None
     return saida
 
 

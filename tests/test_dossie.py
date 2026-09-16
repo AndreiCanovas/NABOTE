@@ -953,3 +953,61 @@ class TestTopicoNaLinhaDeComando(DossieTestCase):
         _, _, err = self._rodar("aggregate", "--window", self.window,
                                 "--topic", "PautaQueNaoExiste")
         self.assertIn("não aparece", err)
+
+
+class TestNomeManualSobrevive(DossieTestCase):
+    """O dossiê não pode apagar a nomeação manual.
+
+    Aconteceu no dado real: `label --set` gravou "Governo — bancada e
+    imprensa", a execução seguinte do dossiê rodou suggest_labels e devolveu
+    "vasques · silvinei" por cima. O trabalho editorial sumiu sem aviso e a
+    página saiu com o nome automático que já se sabia enganoso.
+    """
+
+    def _sub(self):
+        return dossie.subtopics(self.conn, self.window, self.scope,
+                                min_posts=5, min_textos=3)
+
+    def test_suggest_nao_grava_por_cima_do_manual(self):
+        sub = self._sub()
+        dossie.suggest_labels(self.conn, self.window, self.scope, sub)
+        cid = sorted(dossie.labels_of(self.conn, self.window, self.scope))[0]
+        dossie.override_label(self.conn, self.window, self.scope, cid, "Nome do analista")
+        dossie.suggest_labels(self.conn, self.window, self.scope, sub)
+        self.assertEqual(
+            dossie.labels_of(self.conn, self.window, self.scope)[cid],
+            "Nome do analista", "o dossiê apagou a nomeação manual")
+
+    def test_o_nome_manual_chega_as_tabelas(self):
+        sub = self._sub()
+        dossie.suggest_labels(self.conn, self.window, self.scope, sub)
+        cid = sorted(dossie.labels_of(self.conn, self.window, self.scope))[0]
+        dossie.override_label(self.conn, self.window, self.scope, cid, "Nome do analista")
+        s = dossie.snapshot(self.conn, self.window, self.PAUTA, core=False, mapa_top=20)
+        cards = {c["id"]: c["nome"] for c in s["comunidades"]}
+        self.assertEqual(cards[cid], "Nome do analista")
+        for a in s["atores"]:
+            if a["comunidade"] == cid:
+                self.assertEqual(a["comunidade_nome"], "Nome do analista")
+
+    def test_a_proposta_automatica_continua_visivel(self):
+        """Trocar o nome não pode esconder o que o dado sugeria: o contraste
+        entre os dois é informação — na CPMI o automático era o oposto."""
+        sub = self._sub()
+        antes = dossie.suggest_labels(self.conn, self.window, self.scope, sub)
+        cid = sorted(dossie.labels_of(self.conn, self.window, self.scope))[0]
+        automatico = antes[cid]["nome"]
+        dossie.override_label(self.conn, self.window, self.scope, cid, "Nome do analista")
+        depois = dossie.suggest_labels(self.conn, self.window, self.scope, sub)
+        self.assertEqual(depois[cid]["nome"], "Nome do analista")
+        self.assertEqual(depois[cid]["proposto"], automatico)
+        self.assertEqual(depois[cid]["origem"], "manual")
+
+    def test_sobrescrever_explicito_ainda_funciona(self):
+        sub = self._sub()
+        dossie.suggest_labels(self.conn, self.window, self.scope, sub)
+        cid = sorted(dossie.labels_of(self.conn, self.window, self.scope))[0]
+        dossie.override_label(self.conn, self.window, self.scope, cid, "Temporário")
+        dossie.suggest_labels(self.conn, self.window, self.scope, sub, sobrescrever=True)
+        self.assertNotEqual(
+            dossie.labels_of(self.conn, self.window, self.scope)[cid], "Temporário")
