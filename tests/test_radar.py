@@ -172,6 +172,29 @@ class TestSnapshot(RadarTestCase):
             if c["volume"]:
                 self.assertTrue(c["pautas"])
 
+    def test_comunidade_traz_perfil_para_quem_vai_nomear(self):
+        """Sem perfil a comunidade chega ao relatório como "#3", e o número é a
+        ordem por tamanho dentro da janela — muda de uma semana para a outra e
+        não diz nada a quem lê. O perfil é o que permite nomear."""
+        com = [c for c in self.snap["comunidades"] if c["atores"] > 1]
+        self.assertTrue(com, "fixture sem comunidade de mais de um ator")
+        for c in com:
+            self.assertTrue(c["perfis"], f"comunidade #{c['id']} sem perfis")
+            pr = [p["pagerank"] for p in c["perfis"]]
+            self.assertEqual(pr, sorted(pr, reverse=True),
+                             "perfis fora da ordem de PageRank")
+
+    def test_nome_do_analista_chega_ao_radar(self):
+        """O Radar imprimia o número da comunidade mesmo depois de `label --set`
+        porque esta consulta nunca lia a coluna `label`."""
+        from nabote import dossie
+        alvo = self.snap["comunidades"][0]["id"]
+        self.assertIsNone(self.snap["comunidades"][0]["nome"])
+        dossie.override_label(self.conn, self.window, "amp:core", alvo, "Bancada X")
+        depois = radar.snapshot(self.conn, self.window, view="amp")
+        achou = [c for c in depois["comunidades"] if c["id"] == alvo][0]
+        self.assertEqual(achou["nome"], "Bancada X")
+
     def test_serializa_em_json(self):
         import json
         json.dumps(self.snap, ensure_ascii=False)

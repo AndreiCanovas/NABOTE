@@ -126,9 +126,14 @@ def topic_actors(conn: sqlite3.Connection, window_start: str, topico: str,
 
 
 def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
-                   termos_por_comunidade: int = 3,
+                   termos_por_comunidade: int = 3, perfis_por_comunidade: int = 3,
                    graph_version: int = GRAPH_VERSION) -> list[dict[str, Any]]:
-    """Comunidades com tamanho, fechamento, fatia de volume e pautas."""
+    """Comunidades com tamanho, fechamento, fatia de volume, pautas e perfis.
+
+    `nome` é o rótulo do analista, quando existe. O Radar mostrava só o número
+    da comunidade porque esta função nunca leu a coluna — e o número é a ordem
+    por tamanho dentro da janela, que muda toda semana.
+    """
     janela_sql = WINDOW_SQL.format(col="p.created_at")
     pautas: dict[int, list[tuple[str, int]]] = {}
     volume: dict[int, int] = {}
@@ -145,20 +150,46 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
         pautas.setdefault(r["com"], []).append((r["termo"] or "?", r["posts"]))
         volume[r["com"]] = volume.get(r["com"], 0) + r["posts"]
 
+    # Os perfis mais centrais de cada comunidade. Sem eles a comunidade chega
+    # ao relatório como "#3", e "#3" não diz nada a ninguém: o número é a ordem
+    # por tamanho DENTRO desta janela, e muda de uma semana para a outra. O
+    # termo diz o que o grupo fala; o perfil diz quem ele é, e é o perfil que
+    # permite a um humano dar o nome que vai para a página.
+    perfis: dict[int, list[dict[str, Any]]] = {}
+    for r in conn.execute(
+        """
+        SELECT ac.community_id AS com,
+               COALESCE(a.handle, a.platform_user_id) AS quem, m.value AS pagerank
+        FROM actor_community ac
+        JOIN actor_metric m ON m.actor_id = ac.actor_id
+             AND m.window_start = ac.window_start AND m.scope = ac.scope
+             AND m.graph_version = ac.graph_version AND m.metric = 'pagerank'
+        JOIN actor a ON a.actor_id = ac.actor_id
+        WHERE ac.window_start=? AND ac.scope=? AND ac.graph_version=?
+        ORDER BY ac.community_id, m.value DESC
+        """, (window_start, scope, graph_version)
+    ):
+        fila = perfis.setdefault(r["com"], [])
+        if len(fila) < perfis_por_comunidade:
+            fila.append({"quem": r["quem"], "pagerank": r["pagerank"]})
+
     total = sum(volume.values()) or 1
     saida = []
     for r in conn.execute(
-        "SELECT community_id, size, ei_mean, ei_choice, choice_actors FROM community "
-        "WHERE window_start=? AND scope=? AND graph_version=? ORDER BY size DESC",
+        "SELECT community_id, size, ei_mean, ei_choice, choice_actors, label "
+        "FROM community WHERE window_start=? AND scope=? AND graph_version=? "
+        "ORDER BY size DESC",
         (window_start, scope, graph_version)
     ):
         com = r["community_id"]
         lista = sorted(pautas.get(com, []), key=lambda t: -t[1])[:termos_por_comunidade]
         saida.append({
-            "id": com, "atores": r["size"], "ei": r["ei_choice"], "ei_bruto": r["ei_mean"],
+            "id": com, "nome": r["label"],
+            "atores": r["size"], "ei": r["ei_choice"], "ei_bruto": r["ei_mean"],
             "n_escolha": r["choice_actors"],
             "volume": volume.get(com, 0), "fatia_volume": volume.get(com, 0) / total,
             "pautas": [{"termo": t, "posts": n} for t, n in lista],
+            "perfis": perfis.get(com, []),
         })
     return saida
 
