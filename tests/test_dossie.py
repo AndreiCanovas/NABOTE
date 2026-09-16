@@ -156,11 +156,43 @@ class TestMapa(DossieTestCase):
 
     def test_coordenadas_normalizadas(self):
         m = dossie.network_map(self.conn, self.window, self.scope, limit=12)
-        for n in m["nos"]:
+        postos = {i for par in
+                  [(e["de"], e["para"]) for e in m["arestas"]] for i in par}
+        self.assertTrue(postos, "fixture sem esqueleto: o teste passaria vazio")
+        for i, n in enumerate(m["nos"]):
+            if i not in postos:
+                continue
             self.assertGreaterEqual(n["x"], 0.0)
             self.assertLessEqual(n["x"], 1.0)
             self.assertGreaterEqual(n["y"], 0.0)
             self.assertLessEqual(n["y"], 1.0)
+
+    def test_quem_nao_tem_aresta_sai_sem_posicao(self):
+        """Vértice isolado no Fruchterman-Reingold não é puxado por nada: a
+        repulsão o joga na borda, ele passa a definir o mínimo e o máximo da
+        normalização e espreme os aglomerados reais num canto. Fora do layout,
+        ele volta sem coordenada — o desenho declara onde põe esses perfis."""
+        m = dossie.network_map(self.conn, self.window, self.scope, limit=12)
+        postos = {i for e in m["arestas"] for i in (e["de"], e["para"])}
+        self.assertEqual(sorted(set(m["soltos"])),
+                         sorted(set(range(len(m["nos"]))) - postos))
+        for i in m["soltos"]:
+            self.assertIsNone(m["nos"][i]["x"])
+            self.assertIsNone(m["nos"][i]["y"])
+
+    def test_solto_nao_mexe_na_escala_de_quem_ficou(self):
+        """O bug que isto tranca: com os isolados dentro do layout, eles
+        definiam a caixa e as posições de quem tem aresta mudavam conforme o
+        número de isolados no recorte."""
+        m = dossie.network_map(self.conn, self.window, self.scope, limit=12)
+        if not m["soltos"]:
+            self.skipTest("recorte sem perfil solto")
+        xs = [m["nos"][i]["x"] for i in range(len(m["nos"])) if i not in m["soltos"]]
+        ys = [m["nos"][i]["y"] for i in range(len(m["nos"])) if i not in m["soltos"]]
+        self.assertAlmostEqual(min(xs), 0.0, places=9)
+        self.assertAlmostEqual(max(xs), 1.0, places=9)
+        self.assertAlmostEqual(min(ys), 0.0, places=9)
+        self.assertAlmostEqual(max(ys), 1.0, places=9)
 
     def test_layout_e_deterministico(self):
         """Fruchterman-Reingold é estocástico. Sem semente, duas execuções da
@@ -169,6 +201,9 @@ class TestMapa(DossieTestCase):
         b = dossie.network_map(self.conn, self.window, self.scope, limit=20)
         for na, nb in zip(a["nos"], b["nos"]):
             self.assertEqual(na["actor_id"], nb["actor_id"])
+            if na["x"] is None:
+                self.assertIsNone(nb["x"])
+                continue
             self.assertAlmostEqual(na["x"], nb["x"], places=9)
             self.assertAlmostEqual(na["y"], nb["y"], places=9)
 
@@ -711,6 +746,9 @@ class TestMapaComBackbone(DossieTestCase):
         a = dossie.network_map(self.conn, self.window, self.scope, limit=25)
         b = dossie.network_map(self.conn, self.window, self.scope, limit=25)
         for na, nb in zip(a["nos"], b["nos"]):
+            if na["x"] is None:
+                self.assertIsNone(nb["x"])
+                continue
             self.assertAlmostEqual(na["x"], nb["x"], places=9)
             self.assertAlmostEqual(na["y"], nb["y"], places=9)
 

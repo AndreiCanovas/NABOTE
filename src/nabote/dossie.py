@@ -283,19 +283,32 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
     ligados = {x for par in esqueleto for x in par}
     soltos = [i for i in range(len(ids)) if i not in ligados]
 
-    g = igraph.Graph(directed=False)
-    g.add_vertices(len(ids))
+    # O layout roda SÓ sobre quem tem aresta. Um vértice isolado no
+    # Fruchterman-Reingold não é puxado por nada e a repulsão o manda para a
+    # borda da caixa; como a normalização é pelo mínimo e pelo máximo, esses
+    # vértices passam a definir a escala e espremem os aglomerados de verdade
+    # num canto. Pior: a repulsão deles também empurra para longe os membros
+    # mal ligados dos aglomerados reais, e o mapa ganha nós soltos que não
+    # estão soltos. Quem não tem aresta sai com x e y nulos — é o desenho que
+    # decide onde declarar esses perfis, e não o acaso da caixa.
+    posicao: dict[int, tuple[float, float]] = {}
     if esqueleto:
-        g.add_edges(list(esqueleto))
+        no_layout = sorted(ligados)
+        local = {v: i for i, v in enumerate(no_layout)}
+        g = igraph.Graph(directed=False)
+        g.add_vertices(len(no_layout))
+        g.add_edges([(local[a], local[b]) for a, b in esqueleto])
         g.es["weight"] = [float(v) for v in esqueleto.values()]
-    # Fruchterman-Reingold é estocástico: sem semente a mesma janela sai com o
-    # mapa embaralhado a cada execução e ninguém consegue comparar duas.
-    with _rng(LEIDEN_SEED):
-        pos = g.layout_fruchterman_reingold(weights="weight" if esqueleto else None)
-    xs = [p[0] for p in pos] or [0.0]
-    ys = [p[1] for p in pos] or [0.0]
-    dx = (max(xs) - min(xs)) or 1.0
-    dy = (max(ys) - min(ys)) or 1.0
+        # Fruchterman-Reingold é estocástico: sem semente a mesma janela sai
+        # com o mapa embaralhado a cada execução e ninguém compara duas.
+        with _rng(LEIDEN_SEED):
+            pos = g.layout_fruchterman_reingold(weights="weight")
+        xs = [p[0] for p in pos]
+        ys = [p[1] for p in pos]
+        dx = (max(xs) - min(xs)) or 1.0
+        dy = (max(ys) - min(ys)) or 1.0
+        for v, i in local.items():
+            posicao[v] = ((pos[i][0] - min(xs)) / dx, (pos[i][1] - min(ys)) / dy)
 
     meta = {r["actor_id"]: r for r in conn.execute(
         f"SELECT actor_id, handle, tier FROM actor WHERE actor_id IN ({marcas_a})", ids)}
@@ -315,7 +328,8 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
         "comunidade": com.get(a), "comunidade_nome": nomes.get(com.get(a)),
         "pagerank": pagerank[a], "ei": ei.get(a),
         "audiencia": len(audiencia[a]),
-        "x": (pos[i][0] - min(xs)) / dx, "y": (pos[i][1] - min(ys)) / dy,
+        "x": posicao[i][0] if i in posicao else None,
+        "y": posicao[i][1] if i in posicao else None,
     } for i, a in enumerate(ids)]
 
     return {
