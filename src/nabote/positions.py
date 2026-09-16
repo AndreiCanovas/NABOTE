@@ -44,7 +44,9 @@ AXIS = "amp"
 DIAG_VAZIO = {"convergiu": False, "sigma1": 0.0, "inercia": 0.0,
               "inercia_total": 0.0, "fatia_inercia": 0.0,
               "iteracoes": 0, "residuo": None, "dim": 0}
-VAZIO_EXTRA = {"decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
+VAZIO_EXTRA = {"componentes": 0, "cobertura_componente": 0.0,
+               "fora_do_componente": 0,
+               "decis": [], "fatia_no_meio": 0.0, "com_comunidade": 0,
                "atores_na_particao": 0, "amplificadores": 0, "amplificados": 0,
                "concordancia": None, "n_comparados": 0, "maiores": []}
 
@@ -97,6 +99,56 @@ def _podar(matriz: dict[tuple[int, int], float]) -> dict[tuple[int, int], float]
             return atual
         atual = sobra
     return atual
+
+
+def _maior_componente(matriz: dict[tuple[int, int], float]
+                      ) -> tuple[dict[tuple[int, int], float], dict[str, int]]:
+    """Restringe a matriz ao maior componente conexo do grafo bipartido.
+
+    ISTO NÃO É LIMPEZA, É PRÉ-CONDIÇÃO. Numa análise de correspondência sobre
+    tabela desconexa as primeiras dimensões apenas ENUMERAM os componentes:
+    σ₁ = 1,000000 exato, e o escore de cada linha diz em qual bloco ela está,
+    não onde ela está. Com mais de dois componentes o autovalor 1 tem
+    multiplicidade alta, a iteração de potência não tem direção única para
+    convergir, e o vetor devolvido é um ponto arbitrário do autoespaço.
+
+    Foi o que aconteceu na pauta CPMI: σ₁ = 1,0000, 400 iterações sem
+    convergir, e todos os 15.811 atores com escore ≈ −0,000214. O número
+    parecia uma posição e era ruído de uma conta indefinida.
+
+    O grafo de ATORES estava conexo (100% num componente); o bipartido
+    amplificador × alvo, depois da poda de quem não teve escolha, não estava.
+    São coisas diferentes e só a segunda importa para o eixo.
+    """
+    if not matriz:
+        return {}, {"componentes": 0, "cobertura": 0.0, "fora": 0}
+    viz: dict[tuple[str, int], set] = {}
+    for (i, j) in matriz:
+        viz.setdefault(("l", i), set()).add(("c", j))
+        viz.setdefault(("c", j), set()).add(("l", i))
+    vistos: set = set()
+    componentes: list[set] = []
+    for semente in viz:
+        if semente in vistos:
+            continue
+        pilha, grupo = [semente], set()
+        while pilha:
+            atual = pilha.pop()
+            if atual in grupo:
+                continue
+            grupo.add(atual)
+            pilha.extend(viz[atual] - grupo)
+        vistos |= grupo
+        componentes.append(grupo)
+    maior = max(componentes, key=len)
+    linhas = {x[1] for x in maior if x[0] == "l"}
+    recorte = {k: v for k, v in matriz.items() if k[0] in linhas}
+    todas = {i for i, _ in matriz}
+    return recorte, {
+        "componentes": len(componentes),
+        "cobertura": len(linhas) / len(todas) if todas else 0.0,
+        "fora": len(todas) - len(linhas),
+    }
 
 
 def _dimensoes(matriz: dict[tuple[int, int], float], dims: int = 2,
@@ -302,11 +354,12 @@ def compute_positions(
         edge_scope = edge_scope_of(scope)
 
     bruto = _matriz(conn, window_start, edge_scope, view)
-    matriz = _podar(bruto)
+    matriz, comp = _maior_componente(_podar(bruto))
     if not matriz:
         vazio = {"scope": scope, "eixo": AXIS, "atores": 0, "alvos": 0,
                  "descartados": len({i for i, _ in bruto}),
-                 **VAZIO_EXTRA, **DIAG_VAZIO}
+                 **VAZIO_EXTRA, **DIAG_VAZIO,
+                 "componentes": comp["componentes"]}
         return {**vazio, "dimensoes": [vazio], "degenerada": False}
 
     comunidade = {
@@ -353,6 +406,9 @@ def compute_positions(
 
     principal = resultados[0]
     principal["dimensoes"] = resultados
+    principal["componentes"] = comp["componentes"]
+    principal["cobertura_componente"] = comp["cobertura"]
+    principal["fora_do_componente"] = comp["fora"]
     # A dimensão 1 vira indicador de bloco quando há um grupo quase desconexo:
     # concordância ~100% com a partição e quase ninguém no meio. Quando isso
     # acontece o posicionamento útil está na 2.

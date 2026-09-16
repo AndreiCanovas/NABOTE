@@ -737,24 +737,36 @@ class TestEsqueletoLegivel(unittest.TestCase):
                     ar[(i, j)] = rng.randint(2, 12)
         return ar
 
-    def test_ninguem_fica_solto(self):
+    def test_fica_no_grau_medio_que_se_le(self):
+        """O critério antigo — ninguém solto — deu alfa 0,25 e grau médio 16,6
+        no dado real, que é a mancha que o filtro existia para evitar. Bastavam
+        alguns perfis periféricos para empurrar o nível até o topo da escada."""
         ar = self._denso()
         bb, alfa = dossie.esqueleto_legivel(ar)
+        n = len({x for p in ar for x in p})
+        grau = 2 * len(bb) / n
+        self.assertGreater(grau, 1.5, f"virou poeira: grau {grau:.1f} (alfa={alfa})")
+        self.assertLess(grau, 6.5, f"continuou mancha: grau {grau:.1f} (alfa={alfa})")
+
+    def test_escolhe_o_nivel_mais_proximo_do_alvo(self):
+        ar = self._denso()
+        bb, alfa = dossie.esqueleto_legivel(ar)
+        n = len({x for p in ar for x in p})
+        erro = abs(2 * len(bb) / n - dossie.GRAU_ALVO)
+        for outro in dossie.BACKBONE_ESCADA:
+            alt = dossie.backbone(ar, outro)
+            self.assertLessEqual(erro, abs(2 * len(alt) / n - dossie.GRAU_ALVO) + 1e-9,
+                                 f"alfa {outro} chegava mais perto do alvo")
+
+    def test_perfil_solto_e_declarado_em_vez_de_forcar_o_nivel(self):
+        """Ficar sem ligação não é erro: é o achado de que o perfil não divide
+        audiência forte com ninguém. Mas precisa voltar declarado."""
+        ar = self._denso()
+        bb, _ = dossie.esqueleto_legivel(ar)
         nos = {x for p in ar for x in p}
         ligados = {x for p in bb for x in p}
-        self.assertEqual(len(ligados), len(nos),
-                         f"{len(nos)-len(ligados)} perfis ficaram sem ligação (alfa={alfa})")
-
-    def test_escolhe_o_mais_enxuto_que_serve(self):
-        """Se o nível anterior da escada tivesse servido, ele teria sido usado."""
-        ar = self._denso()
-        bb, alfa = dossie.esqueleto_legivel(ar)
-        i = dossie.BACKBONE_ESCADA.index(alfa)
-        if i > 0:
-            antes = dossie.backbone(ar, dossie.BACKBONE_ESCADA[i - 1])
-            nos = {x for p in ar for x in p}
-            self.assertLess(len({x for p in antes for x in p}), len(nos),
-                            "um nível mais enxuto também servia e não foi usado")
+        self.assertLessEqual(len(nos - ligados), len(nos) * 0.4,
+                             "soltou gente demais")
 
     def test_corta_de_verdade(self):
         ar = self._denso()

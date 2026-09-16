@@ -451,9 +451,15 @@ def cmd_dossie(args: argparse.Namespace) -> int:
         print(f"nomes: {len(nomeadas) - len(sem_nome)} de {len(nomeadas)} comunidades "
               f"nomeadas pelos termos distintivos", file=sys.stderr)
         for c in sorted(nomeadas.values(), key=lambda v: -v["atores"])[:8]:
-            perfis = ", ".join("@" + p for p in c["perfis"][:2])
+            perfis = ", ".join("@" + p for p in c["perfis"][:3])
             print(f"      #{c['id']:<3} {c['atores']:>6} atores  "
-                  f"{(c['nome'] or '(sem termo distintivo)'):<40} {perfis}",
+                  f"{(c['nome'] or '(sem termo distintivo)'):<38}  {perfis}",
+                  file=sys.stderr)
+        print("      o termo diz o que a comunidade FALA; os perfis dizem quem ela É. "
+              "Podem divergir — troque com `label --set`.", file=sys.stderr)
+        if mapa["nos"] and mapa["soltos"]:
+            print(f"      {len(mapa['soltos'])} perfil(is) sem ligação forte de "
+                  f"audiência no mapa (grau médio {mapa['grau_medio']:.1f})",
                   file=sys.stderr)
         co = saida["coamplificacao"]
         print(f"coamplificação: {co['grupos'] - co['grupos_ignorados']} de "

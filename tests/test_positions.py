@@ -416,3 +416,79 @@ class TestQuemRecebePosicao(EixoTestCase):
             return sum((x - m) ** 2 for x in vals) / len(vals)
         self.assertAlmostEqual(var(linha), var(coluna), places=6)
         self.assertAlmostEqual(var(linha), diag["inercia"], places=6)
+
+
+class TestComponenteDesconexo(unittest.TestCase):
+    """σ₁ = 1,000000 exato é sintoma, não resultado.
+
+    Na pauta CPMI o eixo devolveu σ₁ = 1,0000, 400 iterações sem convergir e
+    TODOS os 15.811 atores com escore ≈ −0,000214. O número parecia uma posição
+    e era um ponto arbitrário de um autoespaço degenerado: a tabela estava
+    bloco-diagonal, e numa análise de correspondência sobre tabela desconexa as
+    primeiras dimensões só enumeram os componentes.
+    """
+
+    def _blocos(self, n=3):
+        m = {}
+        for b in range(n):
+            base = 100 * (b + 1)
+            for i in range(b * 8 + 1, b * 8 + 9):
+                m[(i, base + 1)] = 3.0
+                m[(i, base + 2)] = 2.0
+        return m
+
+    def test_matriz_desconexa_da_sigma_um_exato(self):
+        """O sintoma, para que o teste seguinte prove que é ele que some."""
+        _, _, d = positions._dimensoes(self._blocos(2), dims=1)[0]
+        self.assertAlmostEqual(d["sigma1"], 1.0, places=9)
+
+    def test_o_recorte_acha_os_componentes(self):
+        _, comp = positions._maior_componente(self._blocos(3))
+        self.assertEqual(comp["componentes"], 3)
+        self.assertAlmostEqual(comp["cobertura"], 8 / 24)
+        self.assertEqual(comp["fora"], 16)
+
+    def test_depois_do_recorte_o_eixo_volta_a_significar(self):
+        m = self._blocos(3)
+        m[(1, 201)] = 1.0          # liga dois dos três blocos
+        rec, comp = positions._maior_componente(m)
+        self.assertEqual(comp["componentes"], 2)
+        _, _, d = positions._dimensoes(rec, dims=1)[0]
+        self.assertLess(d["sigma1"], 1.0, "continuou desconexo depois do recorte")
+        self.assertTrue(d["convergiu"])
+
+    def test_o_recorte_e_de_verdade_um_componente_so(self):
+        rec, _ = positions._maior_componente(self._blocos(3))
+        _, comp2 = positions._maior_componente(rec)
+        self.assertEqual(comp2["componentes"], 1)
+        self.assertAlmostEqual(comp2["cobertura"], 1.0)
+
+    def test_compute_positions_declara_o_que_ficou_de_fora(self):
+        import tempfile
+        from nabote import db as dbmod, graph as gmod, ingest as imod
+        from synthetic import ListSource, planted_communities
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = dbmod.connect(Path(tmp) / "c.db")
+            dbmod.migrate(conn, ROOT / "migrations")
+            eventos, _ = planted_communities(n_communities=2, per_community=16, seed=3)
+            imod.ingest(conn, ListSource(eventos, "b"), author_tier="A")
+            w = gmod.windows_present(conn)[0]
+            gmod.aggregate_window(conn, w)
+            gmod.analyze_window(conn, w, view="amp", core=True)
+            d = positions.compute_positions(conn, w, "amp:core", persist=False)
+            for chave in ("componentes", "cobertura_componente", "fora_do_componente"):
+                self.assertIn(chave, d)
+            self.assertGreaterEqual(d["componentes"], 1)
+            self.assertLessEqual(d["cobertura_componente"], 1.0)
+            conn.close()
+
+    def test_grafo_conexo_nao_perde_ninguem(self):
+        # todo amplificador toca o alvo 100, o que costura tudo num componente;
+        # a versão anterior deste fixture dava um alvo a cada um e produzia três
+        # componentes disfarçados de grafo conexo
+        m = {(i, 100): float(1 + i % 4) for i in range(1, 30)}
+        m.update({(i, 101 + (i % 3)): 2.0 for i in range(1, 30)})
+        rec, comp = positions._maior_componente(m)
+        self.assertEqual(comp["componentes"], 1)
+        self.assertEqual(comp["fora"], 0)
+        self.assertEqual(rec, m)

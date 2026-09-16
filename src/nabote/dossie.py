@@ -127,6 +127,9 @@ PROJECAO_MIN = 2
 # Não é constante única de propósito — ver `esqueleto_legivel`.
 BACKBONE_ESCADA = (0.01, 0.02, 0.05, 0.10, 0.15, 0.25, 0.40, 0.60, 1.0)
 BACKBONE_ALFA = 0.10
+# Grau médio que se lê num diagrama de nós: abaixo de ~2 é poeira, acima de ~6
+# é mancha. É o alvo do filtro, não o número de ligações.
+GRAU_ALVO = 3.5
 
 
 def backbone(arestas: dict[tuple[int, int], float],
@@ -172,34 +175,35 @@ def backbone(arestas: dict[tuple[int, int], float],
 
 
 def esqueleto_legivel(arestas: dict[tuple[int, int], float],
-                      escada: tuple[float, ...] = BACKBONE_ESCADA
+                      escada: tuple[float, ...] = BACKBONE_ESCADA,
+                      grau_alvo: float = GRAU_ALVO
                       ) -> tuple[dict[tuple[int, int], float], float]:
-    """Escolhe o filtro mais enxuto que não deixa nenhum perfil solto.
+    """Escolhe o filtro que deixa o grafo no grau médio que se consegue ler.
 
-    O nível certo do filtro depende da densidade do grafo, e fixá-lo numa
-    constante quebra na pauta seguinte. Medido sobre um grafo com a densidade
-    real do mapa (60 perfis, 1.059 ligações, densidade 0,60):
+    O critério aqui já foi "ninguém pode ficar solto", e ele falhou no dado
+    real: na pauta CPMI o primeiro nível que não deixava ninguém de fora foi
+    alfa 0,25, com 497 ligações entre 60 perfis — grau médio 16,6, que é
+    exatamente a mancha que o filtro existia para evitar. Bastava um punhado de
+    perfis periféricos para empurrar o nível até o topo da escada.
 
-        alfa 0,30 → 400 ligações, grau médio 13,3, 0 soltos   (ainda ilegível)
-        alfa 0,10 →  98 ligações, grau médio  3,3, 0 soltos   (legível)
-        alfa 0,05 →  34 ligações, grau médio  1,1, 27 soltos  (metade do mapa flutua)
-        alfa 0,01 →   3 ligações,                  54 soltos  (destruído)
-
-    Nó solto é o pior caso para um layout de força: sem nenhuma aresta, ele é
-    empurrado para a periferia por repulsão pura e a posição dele não significa
-    nada. Por isso o critério não é "quantas ligações sobraram" e sim "ninguém
-    ficou de fora" — sobe na escada até todo mundo ter pelo menos uma ligação, e
-    para no primeiro nível que satisfaz.
+    O critério passa a ser o grau médio, que é o que governa a legibilidade de
+    um diagrama de nós: abaixo de ~2 o grafo vira poeira, acima de ~6 vira
+    mancha. Perfil que fica sem nenhuma ligação NÃO é erro — é o achado de que
+    ele não divide audiência forte com ninguém do mapa — e volta declarado em
+    `soltos`, para o desenho colocá-lo onde isso se lê, em vez de deixar a
+    repulsão jogá-lo num canto qualquer.
     """
     if not arestas:
         return {}, escada[-1]
-    nos = {x for par in arestas for x in par}
+    n = len({x for par in arestas for x in par})
+    melhor, melhor_alfa, melhor_erro = dict(arestas), escada[-1], float("inf")
     for alfa in escada:
         bb = backbone(arestas, alfa)
-        ligados = {x for par in bb for x in par}
-        if len(ligados) == len(nos):
-            return bb, alfa
-    return dict(arestas), escada[-1]
+        grau = 2 * len(bb) / n if n else 0.0
+        erro = abs(grau - grau_alvo)
+        if erro < melhor_erro:
+            melhor, melhor_alfa, melhor_erro = bb, alfa, erro
+    return melhor, melhor_alfa
 
 
 def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
@@ -232,7 +236,8 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
     if not topo:
         return {"nos": [], "arestas": [], "de": 0, "cobertura_peso": 0.0,
                 "arestas_diretas": 0, "peso_direto": 0.0, "ligacao": "audiencia",
-                "ligacoes_totais": 0, "alfa": alfa or BACKBONE_ALFA}
+                "ligacoes_totais": 0, "alfa": alfa or BACKBONE_ALFA,
+                "soltos": [], "grau_medio": 0.0}
     ids = [r["actor_id"] for r in topo]
     pagerank = {r["actor_id"]: r["value"] for r in topo}
     indice = {a: i for i, a in enumerate(ids)}
@@ -275,6 +280,8 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
         esqueleto, alfa = esqueleto_legivel(comum)
     else:
         esqueleto = backbone(comum, alfa)
+    ligados = {x for par in esqueleto for x in par}
+    soltos = [i for i in range(len(ids)) if i not in ligados]
 
     g = igraph.Graph(directed=False)
     g.add_vertices(len(ids))
@@ -317,6 +324,7 @@ def network_map(conn: sqlite3.Connection, window_start: str, scope: str,
                     for (x, y), n in sorted(esqueleto.items())],
         "ligacao": "audiencia",
         "ligacoes_totais": total_ligacoes, "alfa": alfa,
+        "soltos": soltos, "grau_medio": 2 * len(esqueleto) / len(ids),
         "arestas_diretas": len(diretas),
         "peso_direto": sum(diretas.values()),
         "de": conn.execute(
@@ -934,6 +942,14 @@ def suggest_labels(conn: sqlite3.Connection, window_start: str, scope: str,
             "origem": "ngram" if nome else "sem termo distintivo",
             "termos": [t["termo"] for t in seus],
             "perfis": perfis.get(cid, []),
+            # O n-grama nomeia o que a comunidade DIZ; os perfis, quem ela É.
+            # Na pauta CPMI a comunidade de @nikolas_dm, @carlosjordy e
+            # @FlavioBolsonaro recebeu o nome automático "governista · base" —
+            # porque "base governista" é o que ela escreve, como crítica. Os
+            # dois sinais apontaram para lados opostos, e é por isso que o nome
+            # proposto nunca sai sem os perfis ao lado.
+            "aviso": ("o termo descreve o que a comunidade diz, não quem ela é; "
+                      "confira contra os perfis antes de usar") if nome else None,
         }
 
     if persist:
