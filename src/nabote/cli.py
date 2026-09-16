@@ -772,6 +772,20 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 print(f"{'':12}  ATENÇÃO: menos da metade dos atores está no núcleo. "
                       f"O grafo é uma pilha de cacos, não uma rede.")
 
+            # Um grafo por pauta ao lado do grafo da janela. Sem isto o Radar
+            # responde "quem é central no grafo" quando a pergunta é "quem é
+            # central NESTA pauta" — e as duas respostas são diferentes. O
+            # escopo sai sem `:core` de propósito: é o escopo que
+            # `radar.topic_actors` procura.
+            if getattr(args, "by_topic", False):
+                for topico in graph.topics_in_window(conn, window):
+                    rt = graph.analyze_window(conn, window, view=args.view,
+                                              edge_scope=graph.topic_scope([topico]))
+                    if not rt["nodes"]:
+                        continue
+                    print(f"{'':12}  {rt['nodes']:>6} nós  {rt['edges']:>7} arestas  "
+                          f"{rt['communities']:>4} com.  {rt['scope']}")
+
             # Quantos atores sustentam o E-I comparável. Comunidade onde quase
             # ninguém teve escolha tem E-I frágil, e isso tem de ficar visível.
             linha = conn.execute(
@@ -1030,7 +1044,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
                                       "by_topic": False}),
         ("analyze", cmd_analyze, {"window": None, "all": True, "scope": "all",
                                   "view": args.view, "core": False,
-                                  "partition": None}),
+                                  "partition": None, "by_topic": False}),
         ("dump", cmd_dump, {"window": None, "all": False, "scope": "all",
                             "min_community": 1, "community": None, "core": False,
                             "partition": None, "min_degree": 0.0,
@@ -1497,6 +1511,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="monta o escopo de pauta a partir dos rótulos. Pode "
                          "repetir: a mesma pauta chega partida em etiquetas "
                          "diferentes (CPMI, #CPMIdoGolpe, CPMI do Golpe)")
+    an.add_argument("--by-topic", action="store_true",
+                    help="analisa também um grafo por pauta da janela "
+                         "(amp:topic:<rótulo>), que é o que responde 'quem é "
+                         "central NESTA pauta'. Espelha o --by-topic do aggregate")
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True, com_core=True)
     d.add_argument("--top", type=int, default=15)

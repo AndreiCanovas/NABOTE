@@ -35,7 +35,8 @@ class RadarTestCase(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.conn = db.connect(Path(self._tmp.name) / "r.db")
+        self.db = Path(self._tmp.name) / "r.db"
+        self.conn = db.connect(self.db)
         db.migrate(self.conn, ROOT / "migrations")
         eventos, _ = planted_communities(n_communities=3, per_community=14)
         ingest.ingest(self.conn, ListSource(eventos, "nucleo"), author_tier="A")
@@ -135,6 +136,31 @@ class TestNumerosDaPauta(RadarTestCase):
         for dados in radar.topic_spread(self.conn, self.window, "amp:core").values():
             self.assertGreaterEqual(dados["atravessa"], 1)
             self.assertLessEqual(dados["atravessa"], len(dados["por_comunidade"]))
+
+
+class TestPorPautaPelaCLI(RadarTestCase):
+    """`analyze --by-topic` tem de produzir exatamente os escopos que o Radar
+    procura. O aggregate já tinha a flag e o analyze não, então o escopo por
+    pauta saía agregado e nunca analisado — e a seção "quem é central NESTA
+    pauta" chegava vazia, sem erro nenhum."""
+
+    def test_by_topic_cria_o_escopo_que_o_radar_le(self):
+        import argparse
+        from nabote import cli
+        cli.cmd_aggregate(argparse.Namespace(
+            db=self.db, command="aggregate", window=self.window, all=False,
+            scope="all", by_topic=True, topic=None))
+        cli.cmd_analyze(argparse.Namespace(
+            db=self.db, command="analyze", window=self.window, all=False,
+            scope="all", view="amp", core=True, partition=None,
+            topic=None, by_topic=True))
+        conn = db.connect(self.db)
+        try:
+            for termo, _, _ in self.PAUTAS:
+                atores = radar.topic_actors(conn, self.window, termo, "amp")
+                self.assertTrue(atores, f"{termo} sem atores após --by-topic")
+        finally:
+            conn.close()
 
 
 class TestSnapshot(RadarTestCase):
