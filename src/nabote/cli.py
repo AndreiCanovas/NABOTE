@@ -328,6 +328,18 @@ def cmd_radar(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _escopo_de_pauta(args: argparse.Namespace) -> str | None:
+    """`--topic X --topic Y` → escopo de arestas, ou None se não foi pedido.
+
+    Existe para o usuário não ter de digitar o escopo composto à mão. Os
+    rótulos reais da base têm `#` e espaço — `topic:#CPMIdoGolpe+CPMI+CPMI do
+    Golpe` — e montar isso na linha de comando doze vezes é uma classe inteira
+    de erro de digitação que o programa pode evitar.
+    """
+    topicos = getattr(args, "topic", None)
+    return graph.topic_scope(topicos) if topicos else None
+
+
 def cmd_dossie(args: argparse.Namespace) -> int:
     """Aprofundamento de UMA pauta, no escopo dedicado dela.
 
@@ -660,9 +672,12 @@ def cmd_aggregate(args: argparse.Namespace) -> int:
             print("nenhuma interação no banco. Rode `fetch` antes.", file=sys.stderr)
             return 1
         for window in windows:
-            n = graph.aggregate_window(conn, window, scope=args.scope)
-            print(f"{window}  {n:>7,} arestas agregadas  (scope={args.scope})"
+            escopo_pedido = _escopo_de_pauta(args) or args.scope
+            n = graph.aggregate_window(conn, window, scope=escopo_pedido)
+            print(f"{window}  {n:>7,} arestas agregadas  (scope={escopo_pedido})"
                   .replace(",", "."))
+            if not n and escopo_pedido != "all":
+                print(f"{'':12}  a pauta não aparece nesta janela", file=sys.stderr)
 
             if not args.by_topic:
                 continue
@@ -736,7 +751,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         for window in windows:
             pj, pe = particao
             r = graph.analyze_window(conn, window, view=args.view,
-                                     edge_scope=args.scope, core=args.core,
+                                     edge_scope=_escopo_de_pauta(args) or args.scope,
+                                     core=args.core,
                                      partition_scope=pe, partition_window=pj)
             if not r["nodes"]:
                 print(f"{window}  vazio para a visão {args.view}")
@@ -1465,8 +1481,16 @@ def build_parser() -> argparse.ArgumentParser:
     ag.add_argument("--by-topic", action="store_true",
                     help="agrega também um escopo por pauta (topic:<rótulo>), "
                          "recortando as interações àquela coleta")
-    _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
-            com_view=True, com_core=True)
+    ag.add_argument("--topic", action="append", metavar="PAUTA",
+                    help="agrega UMA pauta, montando o escopo a partir dos "
+                         "rótulos. Pode repetir: a mesma pauta chega partida em "
+                         "etiquetas diferentes (CPMI, #CPMIdoGolpe, CPMI do Golpe)")
+    an = _janela(sub.add_parser("analyze", help="grafo, comunidades e métricas"),
+                 com_view=True, com_core=True)
+    an.add_argument("--topic", action="append", metavar="PAUTA",
+                    help="monta o escopo de pauta a partir dos rótulos. Pode "
+                         "repetir: a mesma pauta chega partida em etiquetas "
+                         "diferentes (CPMI, #CPMIdoGolpe, CPMI do Golpe)")
     d = _janela(sub.add_parser("dump", help="dump cru da janela, para depuração"),
                 com_view=True, com_core=True)
     d.add_argument("--top", type=int, default=15)

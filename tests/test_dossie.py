@@ -871,3 +871,73 @@ class TestNomesDeComunidade(DossieTestCase):
         for v in nomes.values():
             if v["nome"]:
                 self.assertLessEqual(len(v["nome"]), dossie.NOME_MAX)
+
+
+class TestTopicoNaLinhaDeComando(DossieTestCase):
+    """`--topic` repetido monta o escopo composto.
+
+    Os rótulos reais têm `#` e espaço, e montar `topic:#CPMIdoGolpe+CPMI+CPMI do
+    Golpe` à mão, doze vezes, é uma classe inteira de erro de digitação.
+    """
+
+    def _caminho(self):
+        return str(self.conn.execute("PRAGMA database_list").fetchone()["file"])
+
+    def _rodar(self, *argv):
+        import io
+        import contextlib
+        from nabote import cli
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            codigo = cli.main(["--db", self._caminho(), *argv])
+        return codigo, out.getvalue(), err.getvalue()
+
+    def test_aggregate_com_topic_monta_o_escopo(self):
+        codigo, saida, _ = self._rodar("aggregate", "--window", self.window,
+                                       "--topic", self.PAUTA)
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn(f"topic:{self.PAUTA}", saida)
+        n = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM edge_window WHERE window_start=? AND scope=?",
+            (self.window, f"topic:{self.PAUTA}")).fetchone()["n"]
+        self.assertGreater(n, 0)
+
+    def test_varios_topic_viram_um_escopo_so(self):
+        """Duas etiquetas da mesma pauta precisam somar, não dividir o grafo."""
+        from nabote.events import NormalizedEvent, Target
+        extra = [NormalizedEvent(
+            platform="bluesky", kind="post", actor_uid=f"did:plc:sint00{i+1:03d}",
+            occurred_at="2026-09-15T14:00:00Z", post_uid=f"alias{i}",
+            post_type="repost", text=f"{self.PAUTA} garimpo relato {i}",
+            targets=[Target(kind="repost", uid="did:plc:sint00000")])
+            for i in range(12)]
+        ingest.ingest(self.conn, Fonte("alias", extra), kind="campanha",
+                      campaign_label="#PautaHash", author_tier="C", resume=False)
+        self._rodar("aggregate", "--window", self.window, "--topic", self.PAUTA)
+        so_um = self.conn.execute(
+            "SELECT COALESCE(SUM(weight),0) AS w FROM edge_window "
+            "WHERE window_start=? AND scope=?",
+            (self.window, f"topic:{self.PAUTA}")).fetchone()["w"]
+        self._rodar("aggregate", "--window", self.window,
+                    "--topic", self.PAUTA, "--topic", "#PautaHash")
+        composto = graph.topic_scope([self.PAUTA, "#PautaHash"])
+        juntos = self.conn.execute(
+            "SELECT COALESCE(SUM(weight),0) AS w FROM edge_window "
+            "WHERE window_start=? AND scope=?", (self.window, composto)).fetchone()["w"]
+        self.assertGreater(juntos, so_um,
+                           "juntar as etiquetas não somou nada — o escopo dividiu")
+
+    def test_analyze_com_topic_grava_no_escopo_composto(self):
+        self._rodar("aggregate", "--window", self.window, "--topic", self.PAUTA)
+        codigo, saida, _ = self._rodar("analyze", "--window", self.window,
+                                       "--view", "amp", "--topic", self.PAUTA)
+        self.assertEqual(codigo, 0, saida)
+        escopos = {r["scope"] for r in self.conn.execute(
+            "SELECT DISTINCT scope FROM actor_community WHERE window_start=?",
+            (self.window,))}
+        self.assertIn(f"amp:topic:{self.PAUTA}", escopos)
+
+    def test_pauta_ausente_da_janela_avisa_em_vez_de_calar(self):
+        _, _, err = self._rodar("aggregate", "--window", self.window,
+                                "--topic", "PautaQueNaoExiste")
+        self.assertIn("não aparece", err)
