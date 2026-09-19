@@ -859,15 +859,17 @@ def community_rows(conn: sqlite3.Connection, window_start: str, scope: str,
 
 def snapshot(conn: sqlite3.Connection, window_start: str, label: str | list[str],
              view: str = "amp", core: bool = True, top: int = 12,
-             mapa_top: int = MAPA_TOP,
+             mapa_top: int = MAPA_TOP, subpautas: int = SUBPAUTAS_POR_COMUNIDADE,
              janela_anterior: str | None = None) -> dict[str, Any]:
     """Tudo que o Dossiê precisa de uma pauta numa janela, num objeto só."""
     scope = topic_scope(view, label, core)
     # Ordem obrigatória: as sub-pautas alimentam os nomes, e os nomes entram em
     # todas as tabelas. Nomear depois devolveria "#0" em metade da página.
+    # O nome sai sempre dos 3 termos mais distintivos, mesmo quando a tabela
+    # pede mais: alargar a lista muda o relatório, não a nomeação.
     sub = subtopics(conn, window_start, scope)
     nomes = suggest_labels(conn, window_start, scope, sub)
-    sub = subtopics(conn, window_start, scope)
+    sub = subtopics(conn, window_start, scope, por_comunidade=subpautas)
     mapa = network_map(conn, window_start, scope, limit=mapa_top, view=view)
     return {
         "comunidades_nomeadas": nomes,

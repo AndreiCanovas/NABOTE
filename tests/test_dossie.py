@@ -167,6 +167,36 @@ class TestMapa(DossieTestCase):
             self.assertGreaterEqual(n["y"], 0.0)
             self.assertLessEqual(n["y"], 1.0)
 
+    def test_subpautas_alarga_sem_mexer_no_nome(self):
+        """Seguir UM termo entre janelas exige a lista larga: com o padrão de 3,
+        um termo que caia do top 3 numa semana some da série e não dá para
+        distinguir "zero" de "abaixo do corte". Mas o nome automático tem de
+        continuar saindo dos 3 mais distintivos — alargar a tabela não pode
+        mudar como a comunidade se chama."""
+        estreito = dossie.snapshot(self.conn, self.window, self.PAUTA, core=False)
+        largo = dossie.snapshot(self.conn, self.window, self.PAUTA, core=False,
+                                subpautas=12)
+        self.assertEqual(estreito["comunidades_nomeadas"],
+                         largo["comunidades_nomeadas"],
+                         "alargar a tabela mexeu no nome da comunidade")
+        # estritamente maior: com >= o teste passava mesmo com o flag ignorado,
+        # porque os dois lados devolviam a mesma lista
+        self.assertGreater(len(largo["subpautas"]["linhas"]),
+                           len(estreito["subpautas"]["linhas"]),
+                           "alargar não trouxe termo nenhum a mais")
+        estreitissimo = dossie.snapshot(self.conn, self.window, self.PAUTA,
+                                        core=False, subpautas=1)
+        self.assertLess(len(estreitissimo["subpautas"]["linhas"]),
+                        len(estreito["subpautas"]["linhas"]),
+                        "estreitar não cortou termo nenhum")
+        por_com = {}
+        for linha in largo["subpautas"]["linhas"]:
+            por_com.setdefault(linha["comunidade"], 0)
+            por_com[linha["comunidade"]] += 1
+        self.assertTrue(por_com, "fixture sem sub-pauta nenhuma")
+        for cid, n in por_com.items():
+            self.assertLessEqual(n, 12, f"comunidade #{cid} passou do limite")
+
     def test_quem_nao_tem_aresta_sai_sem_posicao(self):
         """Vértice isolado no Fruchterman-Reingold não é puxado por nada: a
         repulsão o joga na borda, ele passa a definir o mínimo e o máximo da

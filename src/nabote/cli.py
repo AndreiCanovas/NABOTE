@@ -14,7 +14,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import __version__, db, graph, identity, ingest, probe
+from . import __version__, db, dossie, graph, identity, ingest, probe
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -428,7 +428,8 @@ def cmd_dossie(args: argparse.Namespace) -> int:
 
         saida = dossie_mod.snapshot(conn, window, args.topic, view=args.view,
                                     core=not args.no_core, top=args.top,
-                                    mapa_top=args.mapa, janela_anterior=anterior)
+                                    mapa_top=args.mapa, subpautas=args.subpautas,
+                                    janela_anterior=anterior)
         sub = saida["subpautas"]
         if not sub["posts_com_texto"]:
             print(f"aviso: 0 de {sub['posts']} posts têm texto no banco — a seção "
@@ -1470,6 +1471,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="atores na tabela de influência (padrão: 12)")
     ds.add_argument("--mapa", type=int, default=60, metavar="N",
                     help="nós no mapa da rede (padrão: 60)")
+    ds.add_argument("--subpautas", type=int, default=dossie.SUBPAUTAS_POR_COMUNIDADE,
+                    metavar="N",
+                    help=f"termos distintivos por comunidade na tabela de "
+                         f"sub-pautas (padrão: {dossie.SUBPAUTAS_POR_COMUNIDADE}). "
+                         f"Alargar serve para seguir UM termo entre janelas: com "
+                         f"o padrão, um termo que caia do top 3 numa semana some "
+                         f"da série sem distinguir 'zero' de 'abaixo do corte'")
     ds.add_argument("--no-core", action="store_true",
                     help="usa o grafo cheio da pauta em vez do núcleo")
     ds.add_argument("--sem-delta", action="store_true",
