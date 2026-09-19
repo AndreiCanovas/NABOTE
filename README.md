@@ -20,7 +20,7 @@ dependa de fato do instrumento. Toda decisão técnica aqui é subordinada a iss
 | **2** | Grafo (`edge_window` + igraph: comunidades, PageRank, E-I) | ✅ **feito** |
 | 3 | Tópicos (embeddings, clustering, `post_topic`) | a fazer |
 | 4 | Exportação (radar semanal e dossiê sob encomenda) | a fazer |
-| 5 | Ligar o X (agregador terceiro na mesma interface de fonte) | a fazer |
+| 5 | Ligar o X (agregador terceiro na mesma interface de fonte) | setup em [`docs/x-api-setup.md`](docs/x-api-setup.md) |
 
 A ordem é de baixo para cima porque cada passo só é testável se o anterior
 estiver produzindo dado real. O X entra por último, de propósito: todo o risco
