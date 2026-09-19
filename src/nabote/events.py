@@ -48,6 +48,11 @@ class NormalizedEvent:
     actor_uid: str
     occurred_at: str                # ISO-8601 UTC
     cursor: str | None = None       # posição para retomada, se a fonte tiver
+    # A QUE cursor esta posição pertence. '' = a fonte tem um só (firehose).
+    # Lendo uma API você pagina a timeline de cada perfil separadamente, e
+    # "onde eu parei" vira uma resposta por conta: sem este campo, a última
+    # conta paginada sobrescreveria o cursor de todas as anteriores.
+    cursor_account: str = ""
     actor_handle: str | None = None
     post_uid: str | None = None
     post_type: str | None = None

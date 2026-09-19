@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from nabote import atproto, db, ingest  # noqa: E402
+from nabote.events import NormalizedEvent  # noqa: E402
 from nabote.sources import FixtureSource  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "jetstream_sintetico.jsonl"
@@ -281,6 +282,148 @@ class TestJetstreamUrl(unittest.TestCase):
         from nabote.sources import JetstreamSource
         with self.assertRaises(ValueError):
             JetstreamSource(wanted_dids=[f"did:plc:{i}" for i in range(10_001)])
+
+
+class _FonteFalsa:
+    """Fonte mínima, para exercitar o laço sem rede nem fixture.
+
+    `frame` é atributo mutável de propósito: é assim que uma fonte real vai
+    anotar, enquanto pagina, quais contas cobriu e quais o teto deixou de fora.
+    """
+
+    def __init__(self, name, eventos, frame=None, explode=False):
+        self.name = name
+        self._eventos = eventos
+        self._explode = explode
+        if frame is not None:
+            self.frame = frame
+
+    def events(self, cursor=None):
+        for ev in self._eventos:
+            yield ev
+        if self._explode:
+            raise RuntimeError("a fonte caiu no meio")
+
+
+def _post(uid, pid, cursor=None, conta=""):
+    return NormalizedEvent(
+        platform="x", kind="post", actor_uid=uid, actor_handle=uid,
+        occurred_at="2026-09-15T10:00:00Z", post_uid=pid, post_type="original",
+        text="oi", cursor=cursor, cursor_account=conta)
+
+
+class CursorTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "c.db")
+        db.migrate(self.conn, ROOT / "migrations")
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+
+class TestCursorPorConta(CursorTestCase):
+    def test_duas_contas_avancam_cursores_independentes(self):
+        """Com chave só em `source`, a segunda conta sobrescreveria a primeira
+        em silêncio — e a retomada recoletaria o que já tinha sido pago."""
+        ingest.ingest(self.conn, _FonteFalsa("x_api", [
+            _post("u1", "p1", cursor="pag-a1", conta="u1"),
+            _post("u2", "p2", cursor="pag-b1", conta="u2"),
+            _post("u1", "p3", cursor="pag-a2", conta="u1"),
+        ]), author_tier="A")
+
+        self.assertEqual(ingest.get_cursor(self.conn, "x_api", "u1"), "pag-a2")
+        self.assertEqual(ingest.get_cursor(self.conn, "x_api", "u2"), "pag-b1")
+
+    def test_fonte_de_um_cursor_so_grava_na_conta_em_branco(self):
+        ingest.ingest(self.conn, _FonteFalsa("firehose", [
+            _post("u1", "p1", cursor="1757000000000011")]), author_tier="A")
+
+        self.assertEqual(ingest.get_cursor(self.conn, "firehose"), "1757000000000011")
+        self.assertEqual(self.conn.execute(
+            "SELECT account FROM source_state WHERE source = 'firehose'"
+        ).fetchone()["account"], "")
+
+    def test_conta_sem_cursor_e_conta_nunca_coletada(self):
+        """`cursors_for` omite quem não tem posição: quem chama precisa ler
+        ausência como 'nunca coletada', não como 'está no começo'."""
+        ingest.set_cursor(self.conn, "x_api", "pag-a1", "u1")
+        self.conn.execute(
+            "INSERT INTO source_state (source, account, cursor, updated_at) "
+            "VALUES ('x_api','u2',NULL,?)", (db.utcnow(),))
+
+        self.assertEqual(ingest.cursors_for(self.conn, "x_api"), {"u1": "pag-a1"})
+
+    def test_cursores_de_outra_fonte_nao_vazam(self):
+        ingest.set_cursor(self.conn, "x_api", "pag-a1", "u1")
+        ingest.set_cursor(self.conn, "outra", "pag-z9", "u1")
+
+        self.assertEqual(ingest.cursors_for(self.conn, "x_api"), {"u1": "pag-a1"})
+        self.assertEqual(ingest.cursors_for(self.conn, "outra"), {"u1": "pag-z9"})
+
+
+class TestRecorteDoRun(CursorTestCase):
+    def _frame(self, run_id):
+        return ingest.run_frame(self.conn, run_id)
+
+    def test_recorte_da_fonte_fica_gravado(self):
+        run_id, _ = ingest.ingest(self.conn, _FonteFalsa(
+            "x_api", [_post("u1", "p1")],
+            frame={"kind": "accounts", "planned": 3}), author_tier="A")
+
+        self.assertEqual(self._frame(run_id), {"kind": "accounts", "planned": 3})
+
+    def test_o_que_a_fonte_alcancou_vence_o_que_ela_planejou(self):
+        """A fonte mexe no próprio recorte enquanto pagina; o valor gravado no
+        fim é o que responde 'esta janela cobriu quantas das sementes?'."""
+        recorte = {"kind": "accounts", "planned": 3}
+
+        class Cobre(_FonteFalsa):
+            def events(self, cursor=None):
+                yield _post("u1", "p1")
+                self.frame["reached"] = 2
+                self.frame["left_out"] = ["u3"]
+
+        run_id, _ = ingest.ingest(
+            self.conn, Cobre("x_api", [], frame=recorte), author_tier="A")
+
+        self.assertEqual(self._frame(run_id), {
+            "kind": "accounts", "planned": 3, "reached": 2, "left_out": ["u3"]})
+
+    def test_recorte_explicito_vence_o_da_fonte(self):
+        run_id, _ = ingest.ingest(
+            self.conn, _FonteFalsa("x_api", [_post("u1", "p1")],
+                                   frame={"kind": "accounts"}),
+            author_tier="A", frame={"kind": "search", "term": "CPMI"})
+
+        self.assertEqual(self._frame(run_id), {"kind": "search", "term": "CPMI"})
+
+    def test_run_que_cai_no_meio_mantem_o_recorte(self):
+        """Status 'failed' sem recorte é um run que ninguém consegue explicar
+        no dia seguinte: o plano é justamente o que diz o que ele tentava."""
+        fonte = _FonteFalsa("x_api", [_post("u1", "p1")],
+                            frame={"kind": "accounts", "planned": 3}, explode=True)
+        with self.assertRaises(RuntimeError):
+            ingest.ingest(self.conn, fonte, author_tier="A")
+
+        row = self.conn.execute(
+            "SELECT run_id, status FROM collection_run ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(self._frame(row["run_id"]), {"kind": "accounts", "planned": 3})
+
+    def test_fechar_sem_recorte_preserva_o_da_abertura(self):
+        run_id = ingest.start_run(self.conn, "x_api", frame={"kind": "accounts"})
+        ingest.finish_run(self.conn, run_id, ingest.Stats())
+
+        self.assertEqual(self._frame(run_id), {"kind": "accounts"})
+
+    def test_fonte_sem_recorte_nao_inventa_um(self):
+        run_id, _ = ingest.ingest(
+            self.conn, _FonteFalsa("firehose", [_post("u1", "p1")]), author_tier="A")
+
+        self.assertIsNone(self._frame(run_id))
 
 
 if __name__ == "__main__":

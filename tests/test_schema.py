@@ -10,6 +10,7 @@ Rodar:  python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -245,6 +246,81 @@ class TestCostTracking(SchemaTestCase):
         self.assertAlmostEqual(rows["baseline"]["cost_usd"], 0.30, places=4)
         self.assertAlmostEqual(rows["campanha"]["cost_usd"], 0.17, places=4)
         self.assertEqual(rows["campanha"]["campaign_label"], "C-014")
+
+
+class TestCursorPorConta(SchemaTestCase):
+    """Lendo um firehose existe um cursor só. Lendo uma API, um por perfil."""
+
+    def test_a_mesma_fonte_guarda_um_cursor_por_conta(self):
+        for conta, cursor in [("u1", "pag-aaa"), ("u2", "pag-bbb")]:
+            self.conn.execute(
+                "INSERT INTO source_state (source, account, cursor, updated_at) "
+                "VALUES (?,?,?,?)", ("twitterapi_io", conta, cursor, db.utcnow()))
+        guardado = {r["account"]: r["cursor"] for r in self.conn.execute(
+            "SELECT account, cursor FROM source_state WHERE source = 'twitterapi_io'")}
+        self.assertEqual(guardado, {"u1": "pag-aaa", "u2": "pag-bbb"})
+
+    def test_a_mesma_conta_duas_vezes_e_recusada(self):
+        self.conn.execute(
+            "INSERT INTO source_state (source, account, cursor, updated_at) "
+            "VALUES (?,?,?,?)", ("twitterapi_io", "u1", "pag-aaa", db.utcnow()))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "INSERT INTO source_state (source, account, cursor, updated_at) "
+                "VALUES (?,?,?,?)", ("twitterapi_io", "u1", "pag-bbb", db.utcnow()))
+
+    def test_conta_em_branco_e_o_padrao_de_quem_tem_um_cursor_so(self):
+        self.conn.execute(
+            "INSERT INTO source_state (source, cursor, updated_at) VALUES (?,?,?)",
+            ("bluesky_jetstream", "1757000000000011", db.utcnow()))
+        self.assertEqual(self.conn.execute(
+            "SELECT account FROM source_state").fetchone()["account"], "")
+
+    def test_migracao_preserva_o_cursor_de_um_banco_antigo(self):
+        """Reconstruir a tabela não pode perder a posição já conquistada:
+        recoletar o que já foi pago é o preço de uma migração descuidada."""
+        antigas = Path(self._tmp.name) / "migracoes_005"
+        antigas.mkdir()
+        for versao, _, caminho in db.discover_migrations(ROOT / "migrations"):
+            if versao <= 5:
+                shutil.copy(caminho, antigas / caminho.name)
+
+        velho = db.connect(Path(self._tmp.name) / "velho.db")
+        try:
+            db.migrate(velho, antigas)
+            velho.execute(
+                "INSERT INTO source_state (source, cursor, updated_at) VALUES (?,?,?)",
+                ("bluesky_jetstream", "1757000000000011", db.utcnow()))
+
+            db.migrate(velho, ROOT / "migrations")
+
+            row = velho.execute("SELECT * FROM source_state").fetchone()
+            self.assertEqual(row["source"], "bluesky_jetstream")
+            self.assertEqual(row["account"], "")
+            self.assertEqual(row["cursor"], "1757000000000011")
+        finally:
+            velho.close()
+
+
+class TestRecorteDaColeta(SchemaTestCase):
+    def test_run_aceita_recorte_e_devolve_o_que_entrou(self):
+        recorte = '{"kind":"accounts","planned":150,"reached":90}'
+        cur = self.conn.execute(
+            "INSERT INTO collection_run (source, kind, started_at, frame) "
+            "VALUES (?,?,?,?)", ("twitterapi_io", "baseline", db.utcnow(), recorte))
+        self.assertEqual(self.conn.execute(
+            "SELECT frame FROM collection_run WHERE run_id = ?",
+            (cur.lastrowid,)).fetchone()["frame"], recorte)
+
+    def test_run_sem_recorte_continua_valido(self):
+        """O firehose não recorta nada, e os runs que já existem no banco
+        tampouco: a coluna nasce opcional ou a migração quebraria o passo 1."""
+        cur = self.conn.execute(
+            "INSERT INTO collection_run (source, kind, started_at) VALUES (?,?,?)",
+            ("bluesky_jetstream", "baseline", db.utcnow()))
+        self.assertIsNone(self.conn.execute(
+            "SELECT frame FROM collection_run WHERE run_id = ?",
+            (cur.lastrowid,)).fetchone()["frame"])
 
 
 if __name__ == "__main__":

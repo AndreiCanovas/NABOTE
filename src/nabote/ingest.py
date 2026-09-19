@@ -183,40 +183,102 @@ def handle_event(conn: sqlite3.Connection, run_id: int, ev: NormalizedEvent,
             stats.interactions_new += 1
 
 
+def _frame_json(frame: dict[str, Any] | None) -> str | None:
+    """Serializa o recorte. `sort_keys` para o mesmo recorte dar o mesmo texto:
+    sem isso, dois runs idênticos produzem linhas que não se comparam."""
+    if frame is None:
+        return None
+    return json.dumps(frame, ensure_ascii=False, sort_keys=True)
+
+
 def start_run(conn: sqlite3.Connection, source: str, kind: str = "baseline",
-              campaign_label: str | None = None, query: str | None = None) -> int:
+              campaign_label: str | None = None, query: str | None = None,
+              frame: dict[str, Any] | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO collection_run (source, kind, campaign_label, query, started_at) "
-        "VALUES (?,?,?,?,?)", (source, kind, campaign_label, query, utcnow()))
+        "INSERT INTO collection_run (source, kind, campaign_label, query, started_at, "
+        "frame) VALUES (?,?,?,?,?,?)",
+        (source, kind, campaign_label, query, utcnow(), _frame_json(frame)))
     return cur.lastrowid
 
 
 def finish_run(conn: sqlite3.Connection, run_id: int, stats: Stats,
-               status: str = "ok", cost_usd: float = 0.0, error: str | None = None) -> None:
+               status: str = "ok", cost_usd: float = 0.0, error: str | None = None,
+               frame: dict[str, Any] | None = None) -> None:
+    """`frame=None` PRESERVA o recorte gravado na abertura em vez de apagá-lo.
+
+    O recorte é escrito duas vezes de propósito: na abertura ele é o plano, e
+    aqui é o que o run de fato alcançou. Mas um run que morreu antes de a fonte
+    atualizar o recorte ainda precisa manter o plano — é ele que explica, no
+    dia seguinte, o que a coleta estava tentando fazer quando caiu.
+    """
     conn.execute(
         "UPDATE collection_run SET ended_at = ?, items_fetched = ?, cost_usd = ?, "
-        "status = ?, error = ? WHERE run_id = ?",
-        (utcnow(), stats.posts_new, cost_usd, status, error, run_id))
+        "status = ?, error = ?, frame = COALESCE(?, frame) WHERE run_id = ?",
+        (utcnow(), stats.posts_new, cost_usd, status, error,
+         _frame_json(frame), run_id))
 
 
-def get_cursor(conn: sqlite3.Connection, source: str) -> str | None:
-    row = conn.execute("SELECT cursor FROM source_state WHERE source = ?",
-                       (source,)).fetchone()
+def run_frame(conn: sqlite3.Connection, run_id: int) -> dict[str, Any] | None:
+    """O recorte de um run, já desserializado."""
+    row = conn.execute("SELECT frame FROM collection_run WHERE run_id = ?",
+                       (run_id,)).fetchone()
+    if row is None or row["frame"] is None:
+        return None
+    return json.loads(row["frame"])
+
+
+def get_cursor(conn: sqlite3.Connection, source: str, account: str = "") -> str | None:
+    """Posição de retomada. `account=''` é a fonte que tem um cursor só."""
+    row = conn.execute(
+        "SELECT cursor FROM source_state WHERE source = ? AND account = ?",
+        (source, account)).fetchone()
     return row["cursor"] if row else None
 
 
-def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
+def cursors_for(conn: sqlite3.Connection, source: str) -> dict[str, str]:
+    """Todos os cursores de uma fonte, por conta.
+
+    Existe porque planejar uma coleta por conta é operação de conjunto — quais
+    das 150 sementes estão atrasadas — e fazer 150 SELECTs para responder isso
+    é desperdício. Contas sem cursor gravado não aparecem: ausência é "nunca
+    coletada", e é assim que quem chama precisa ler.
+    """
+    return {r["account"]: r["cursor"] for r in conn.execute(
+        "SELECT account, cursor FROM source_state WHERE source = ? AND cursor IS NOT NULL",
+        (source,))}
+
+
+def set_cursor(conn: sqlite3.Connection, source: str, cursor: str,
+               account: str = "") -> None:
     conn.execute(
-        "INSERT INTO source_state (source, cursor, updated_at) VALUES (?,?,?) "
-        "ON CONFLICT (source) DO UPDATE SET cursor = excluded.cursor, "
-        "updated_at = excluded.updated_at", (source, cursor, utcnow()))
+        "INSERT INTO source_state (source, account, cursor, updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT (source, account) DO UPDATE SET cursor = excluded.cursor, "
+        "updated_at = excluded.updated_at", (source, account, cursor, utcnow()))
+
+
+def _gravar_cursores(conn: sqlite3.Connection, source: str,
+                     vistos: dict[str, str]) -> None:
+    for account, cursor in vistos.items():
+        set_cursor(conn, source, cursor, account)
+
+
+def _frame_da_fonte(source: Any, explicito: dict[str, Any] | None) -> dict[str, Any] | None:
+    """O recorte é da fonte: ela é quem sabe o que saiu buscar e o que alcançou.
+
+    Lido duas vezes por run, e de propósito não copiado: uma fonte que atualiza
+    o próprio `frame` enquanto pagina — marcando quais contas cobriu e quais o
+    teto de gasto deixou de fora — tem a versão final gravada no fim, sem
+    precisar avisar ninguém.
+    """
+    return explicito if explicito is not None else getattr(source, "frame", None)
 
 
 def ingest(conn: sqlite3.Connection, source: Any, *, kind: str = "baseline",
            campaign_label: str | None = None, max_events: int | None = None,
            max_seconds: float | None = None, author_tier: str = "C",
            resume: bool = True, cost_usd: float = 0.0,
-           store_raw: bool = True) -> tuple[int, Stats]:
+           store_raw: bool = True,
+           frame: dict[str, Any] | None = None) -> tuple[int, Stats]:
     """Consome a fonte até o teto de eventos ou de tempo. Devolve (run_id, stats).
 
     Os tetos não são conveniência: o plano exige que orçamento seja código, e
@@ -228,12 +290,21 @@ def ingest(conn: sqlite3.Connection, source: Any, *, kind: str = "baseline",
     reprocessar o payload guardado é grátis e recoletar não é. Carregando de um
     zip que já está no disco, essa razão não se aplica — o zip É o arquivo, e
     guardar de novo só duplica gigabytes. Para coleta de rede, mantenha ligado.
+
+    `frame` é o recorte do mundo que este run cobre, e sobrescreve o que a
+    fonte declarar. Fica gravado em `collection_run.frame` — é o que responde,
+    seis meses depois, se um número saiu de uma coleta completa ou de uma que
+    o teto de gasto cortou no meio.
     """
-    run_id = start_run(conn, source.name, kind, campaign_label)
+    run_id = start_run(conn, source.name, kind, campaign_label,
+                       frame=_frame_da_fonte(source, frame))
     stats = Stats()
     started = time.monotonic()
     cursor = get_cursor(conn, source.name) if resume else None
-    last_cursor = cursor
+    # conta -> última posição vista NESTA execução. Dicionário e não um valor
+    # só porque uma fonte que pagina timeline por perfil avança vários cursores
+    # no mesmo run, e o último não vale pelos outros.
+    vistos: dict[str, str] = {}
     status, error = "ok", None
 
     try:
@@ -242,11 +313,10 @@ def ingest(conn: sqlite3.Connection, source: Any, *, kind: str = "baseline",
             stats.events_seen += 1
             handle_event(conn, run_id, ev, stats, author_tier, store_raw)
             if ev is not None and ev.cursor:
-                last_cursor = ev.cursor
+                vistos[ev.cursor_account] = ev.cursor
 
             if stats.events_seen % COMMIT_EVERY == 0:
-                if last_cursor:
-                    set_cursor(conn, source.name, last_cursor)
+                _gravar_cursores(conn, source.name, vistos)
                 conn.execute("COMMIT")
                 conn.execute("BEGIN")
 
@@ -261,9 +331,9 @@ def ingest(conn: sqlite3.Connection, source: Any, *, kind: str = "baseline",
         # o que a fonte descartou por ser irrelevante nunca chega aqui, mas o
         # número importa para explicar uma coleta de volume baixo
         stats.events_ignored += getattr(source, "skipped", 0)
-        if last_cursor:
-            set_cursor(conn, source.name, last_cursor)
-        finish_run(conn, run_id, stats, status=status, cost_usd=cost_usd, error=error)
+        _gravar_cursores(conn, source.name, vistos)
+        finish_run(conn, run_id, stats, status=status, cost_usd=cost_usd, error=error,
+                   frame=_frame_da_fonte(source, frame))
         conn.execute("COMMIT")
 
     return run_id, stats

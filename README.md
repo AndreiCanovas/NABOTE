@@ -653,6 +653,7 @@ em código é auditável, disciplina humana não é.
 ```
 migrations/001_initial.sql   schema — o documento mais importante do repositório
 migrations/002_*.sql         exclusões honradas e cursor de retomada
+migrations/006_*.sql         recorte da coleta e cursor por conta
 src/nabote/db.py             conexão, pragmas, migrações
 src/nabote/atproto.py        normalização de registros AT Protocol (puro, sem I/O)
 src/nabote/sources/          jetstream (rede) e fixture (arquivo), mesma interface
