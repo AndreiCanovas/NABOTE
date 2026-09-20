@@ -657,7 +657,7 @@ migrations/002_*.sql         exclusões honradas e cursor de retomada
 migrations/006_*.sql         recorte da coleta e cursor por conta
 src/nabote/db.py             conexão, pragmas, migrações
 src/nabote/atproto.py        normalização de registros AT Protocol (puro, sem I/O)
-src/nabote/sources/          jetstream (rede) e fixture (arquivo), mesma interface
+src/nabote/sources/          jetstream, x_api, x_parquet e fixture — mesma interface
 src/nabote/ingest.py         evento → raw_payload → actor/post/interaction
 src/nabote/graph.py          edge_window, igraph, comunidades e métricas
 src/nabote/cli.py            init, status, fetch, aggregate, analyze, dump

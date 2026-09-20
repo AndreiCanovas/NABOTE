@@ -1,0 +1,36 @@
+{
+  "_procedencia": "Capturado da API real em 20/09/2026 com o crédito de teste. Os três primeiros blocos são resposta literal; 'retweet_sintetico' é montado, porque nenhuma das amostras trouxe retweeted_tweet preenchido — ver o teste que o marca como não validado contra a API.",
+
+  "user_info": {"status":"success","msg":"success","data":{"id":"758264276","name":"Nikolas Ferreira","userName":"nikolas_dm","location":"Belo Horizonte, Brasil","url":"https://t.co/LINq3RQ53C","description":"- Dep. Federal mais votado do Brasil e da história de Minas Gerais - Most voted congressman in Brazil.","protected":false,"isVerified":false,"isBlueVerified":true,"verifiedType":null,"followers":5575339,"following":945,"favouritesCount":11029,"statusesCount":12962,"mediaCount":4739,"createdAt":"2012-08-15T01:22:19.000000Z","canDm":false,"isAutomated":false,"automatedBy":null,"pinnedTweetIds":["1778025514524893452"],"profile_interstitial_type":""}},
+
+  "last_tweets": {"status":"success","code":0,"msg":"success","data":{"pin_tweet":null,"tweets":[
+    {"type":"tweet","id":"2101713401009369096","url":"https://x.com/nikolas_dm/status/2101713401009369096","text":"Ops https://t.co/fRMPwLSObt","source":"Twitter for iPhone","retweetCount":1662,"replyCount":295,"likeCount":11200,"quoteCount":34,"viewCount":71806,"createdAt":"Sun Sep 20 16:41:37 +0000 2026","lang":"und","bookmarkCount":43,"isReply":false,"inReplyToId":null,"conversationId":"2101713401009369096","inReplyToUserId":null,"inReplyToUsername":null,
+     "author":{"type":"user","userName":"nikolas_dm","id":"758264276","name":"Nikolas Ferreira","isBlueVerified":true,"description":"","location":"Belo Horizonte, Brasil","followers":5575356,"following":945,"createdAt":"Wed Aug 15 01:22:19 +0000 2012","favouritesCount":11029,"mediaCount":4739,"statusesCount":12962,"profile_bio":{"description":"- Dep. Federal mais votado do Brasil e da história de Minas Gerais - Most voted congressman in Brazil."},"isAutomated":false},
+     "card":null,"place":{},"entities":{},"quoted_tweet":null,"retweeted_tweet":null,"isLimitedReply":false,"communityInfo":null,"article":null}
+  ],"has_next_page":true,"next_cursor":"DAABCgABGxxxxx"}},
+
+  "advanced_search": {"tweets":[
+    {"type":"tweet","id":"2101762898523771329","url":"https://x.com/JulianoSilva73/status/2101762898523771329","text":"Explique porquê o governo da quadrilha do PT era contra cpmi do master????","source":"Twitter for iPhone","retweetCount":0,"replyCount":0,"likeCount":0,"quoteCount":0,"viewCount":1,"createdAt":"Sun Sep 20 19:58:18 +0000 2026","lang":"pt","bookmarkCount":0,"isReply":false,"inReplyToId":null,"conversationId":"2101762898523771329","inReplyToUserId":null,"inReplyToUsername":null,
+     "author":{"type":"user","userName":"JulianoSilva73","id":"1037410927757467648","name":"@TalebCapixaba","isBlueVerified":true,"description":"","location":"Serra, Brasil","followers":335,"following":724,"createdAt":"Wed Sep 05 18:43:34 +0000 2018","favouritesCount":12316,"mediaCount":4579,"statusesCount":25414,"profile_bio":{"description":""},"isAutomated":false},
+     "entities":{},
+     "quoted_tweet":{"type":"tweet","id":"2101678966746534151","url":"https://x.com/ptbrasil/status/2101678966746534151","text":"Oi, Flávio. Vimos que você acordou com vontade de voltar na pauta do Bolsa Master… Tem certeza?!","source":"Twitter for iPhone","retweetCount":1770,"replyCount":535,"likeCount":5840,"quoteCount":59,"viewCount":116463,"createdAt":"Sun Sep 20 14:24:47 +0000 2026","lang":"pt","bookmarkCount":81,"isReply":false,"inReplyToId":null,"conversationId":"2101678966746534151","inReplyToUserId":null,"inReplyToUsername":null,
+       "author":{"type":"user","userName":"ptbrasil","id":"14594813","name":"PT Brasil","isBlueVerified":true,"description":"","createdAt":"Thu May 01 12:00:00 +0000 2008","followers":1000000,"following":100,"statusesCount":50000,"profile_bio":{"description":"Partido dos Trabalhadores"},"isAutomated":false},
+       "entities":{},"quoted_tweet":null,"retweeted_tweet":null},
+     "retweeted_tweet":null}
+  ],"has_next_page":true,"next_cursor":"DAABCgABGyyyyy"},
+
+  "resposta_com_alvo": {"type":"tweet","id":"2101700000000000001","url":"https://x.com/alguem/status/2101700000000000001","text":"discordo disso","createdAt":"Sun Sep 20 12:00:00 +0000 2026","lang":"pt","retweetCount":0,"replyCount":0,"likeCount":2,"quoteCount":0,"viewCount":9,"bookmarkCount":0,"isReply":true,"inReplyToId":"2101690000000000000","conversationId":"2101690000000000000","inReplyToUserId":"758264276","inReplyToUsername":"nikolas_dm",
+    "author":{"type":"user","userName":"alguem","id":"999000111","name":"Alguém","isBlueVerified":false,"description":"","createdAt":"Mon Jan 02 10:00:00 +0000 2017","followers":12,"following":30,"statusesCount":400,"profile_bio":{"description":""},"isAutomated":false},
+    "entities":{},"quoted_tweet":null,"retweeted_tweet":null},
+
+  "retweet_sintetico": {"type":"tweet","id":"2101700000000000002","url":"https://x.com/outro/status/2101700000000000002","text":"RT @ptbrasil: Oi, Flávio.","createdAt":"Sun Sep 20 15:00:00 +0000 2026","lang":"pt","retweetCount":0,"replyCount":0,"likeCount":0,"quoteCount":0,"viewCount":3,"bookmarkCount":0,"isReply":false,"inReplyToId":null,"conversationId":"2101700000000000002","inReplyToUserId":null,"inReplyToUsername":null,
+    "author":{"type":"user","userName":"outro","id":"888000222","name":"Outro","isBlueVerified":false,"description":"","createdAt":"Tue Mar 03 08:00:00 +0000 2020","followers":50,"following":80,"statusesCount":900,"profile_bio":{"description":""},"isAutomated":false},
+    "entities":{},"quoted_tweet":null,
+    "retweeted_tweet":{"type":"tweet","id":"2101678966746534151","url":"https://x.com/ptbrasil/status/2101678966746534151","text":"Oi, Flávio. Vimos que você acordou com vontade de voltar na pauta do Bolsa Master… Tem certeza?!","createdAt":"Sun Sep 20 14:24:47 +0000 2026","lang":"pt","retweetCount":1770,"replyCount":535,"likeCount":5840,"quoteCount":59,"viewCount":116463,"bookmarkCount":81,"isReply":false,"inReplyToId":null,"conversationId":"2101678966746534151","inReplyToUserId":null,"inReplyToUsername":null,
+      "author":{"type":"user","userName":"ptbrasil","id":"14594813","name":"PT Brasil","isBlueVerified":true,"description":"","createdAt":"Thu May 01 12:00:00 +0000 2008","followers":1000000,"following":100,"statusesCount":50000,"profile_bio":{"description":"Partido dos Trabalhadores"},"isAutomated":false},
+      "entities":{},"quoted_tweet":null,"retweeted_tweet":null}},
+
+  "saldo": {"recharge_credits":0,"total_bonus_credits":9982},
+  "erro_403": {"error":"Forbidden","message":"API key required. Please include x-api-key in your request header.","code":-1},
+  "erro_429": {"error":"Too Many Requests","message":"For free-tier users, the QPS limit is one request every 5 seconds."}
+}

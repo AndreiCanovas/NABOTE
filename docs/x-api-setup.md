@@ -3,8 +3,9 @@
 Runbook do passo 5. Você executa este documento uma vez; depois ele serve para
 quando a chave vazar, o crédito acabar ou o provedor sumir.
 
-**Estado:** conta criada (20/09/2026). Faltam os endpoints; nada em
-`sources/x_api.py` ainda.
+**Estado:** ligado. `sources/x_api.py` escrito e testado contra a captura
+real de 20/09/2026. Falta confirmar o retuíte (ver *Lacunas*) e rodar a
+primeira coleta de verdade.
 
 ---
 
@@ -187,6 +188,41 @@ O que eu preciso ver, e por que:
   lê um firehose só; aqui você pagina a timeline de cada perfil separadamente.
 - **a forma do erro** — 401, 429, crédito esgotado. O teto de gasto tem que
   distinguir "acabou o crédito" de "o provedor caiu".
+
+### O que a captura de 20/09/2026 revelou
+
+Três armadilhas de formato, todas em `tests/fixtures/twitterapi_io.json` e
+todas com teste que quebra se o conserto for revertido:
+
+1. **`createdAt` tem dois formatos no mesmo nome de campo.** Em
+   `/twitter/user/info` vem ISO com microssegundos; dentro do `author`
+   embutido num tweet vem no formato legado do Twitter
+   (`Wed Aug 15 01:22:19 +0000 2012`). Um parser só quebra em metade das
+   chamadas.
+2. **`description` do autor embutido vem vazio** — a bio está em
+   `profile_bio.description`. No endpoint de perfil é o contrário. Ler só o
+   primeiro faz todo ator que nasce como alvo de aresta chegar sem bio, em
+   silêncio.
+3. **`entities` do tweet vem `{}`**, sem `user_mentions`. Menção não sai
+   daqui com id.
+
+E um limite que nem a doc nem o catálogo mencionavam: **1 requisição a cada 5
+segundos no tier gratuito** (o `SKILL.md` deles anuncia ~200 QPS, que é conta
+paga). Um baseline de 150 perfis leva 12,5 minutos no mínimo.
+
+**Custo medido, não estimado:** a captura inteira — 1 perfil, 1 página de
+timeline, 1 página de busca — custou **18 créditos**, ou US$ 0,00018. A
+estimativa a priori pela tabela de preço errava por 35×, que é o argumento
+para medir.
+
+### Lacunas conhecidas
+
+- **Retuíte não foi validado contra a API.** Nenhuma das amostras trouxe
+  `retweeted_tweet` preenchido; a forma foi inferida por simetria com
+  `quoted_tweet`, e o teste está marcado como tal. Confirmar antes de confiar
+  em número de amplificação.
+- **Menção não vira aresta.** Extrair do texto daria handle sem id, e handle
+  muda — cada troca de nome viraria um ator novo.
 
 ## Parte 5 — higiene da chave
 
