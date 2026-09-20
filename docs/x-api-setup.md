@@ -82,22 +82,29 @@ Nada aqui exige conta na X, telefone verificado nem formulário de aprovação.
 
 ```bash
 cd ~/NABOTE
-cp .env.example .env
+cp -n .env.example .env
+
+read -rsp "Cole a chave e dê Enter: " K && \
+  printf '\nNABOTE_X_PROVIDER=twitterapi_io\nNABOTE_X_API_KEY=%s\n' "$K" >> .env && \
+  unset K && echo " — gravado"
 ```
 
-Preencha as duas linhas que já estão no arquivo, hoje comentadas:
+`read -rs` lê sem imprimir na tela e, o que importa mais, **sem deixar a chave
+no histórico do shell** — que é exatamente o que acontece se você a colar dentro
+de um comando. As duas linhas equivalentes já existem comentadas no
+`.env.example`; as novas vão para o fim do arquivo e são as que valem.
 
-```
-NABOTE_X_PROVIDER=twitterapi_io
-NABOTE_X_API_KEY=cole_a_chave_aqui
-```
-
-Confira que o git não enxerga o arquivo:
+Confira que carregou e que o git não enxerga o arquivo:
 
 ```bash
-git check-ignore -v .env     # tem que apontar para a regra do .gitignore
-git status --short           # .env NÃO pode aparecer
+set -a; source .env; set +a
+echo "chave: ${#NABOTE_X_API_KEY} caracteres"   # tem que ser > 0
+git check-ignore -v .env                         # aponta para a regra do .gitignore
+git status --short                               # .env NÃO pode aparecer
 ```
+
+`${#VAR}` imprime o comprimento, não o conteúdo: confirma que a chave está lá
+sem colocá-la na tela.
 
 Se `.env` aparecer no `git status`, pare e me chame antes de commitar
 qualquer coisa.
