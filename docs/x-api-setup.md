@@ -3,9 +3,7 @@
 Runbook do passo 5. Você executa este documento uma vez; depois ele serve para
 quando a chave vazar, o crédito acabar ou o provedor sumir.
 
-**Estado:** ligado. `sources/x_api.py` escrito e testado contra a captura
-real de 20/09/2026. Falta confirmar o retuíte (ver *Lacunas*) e rodar a
-primeira coleta de verdade.
+**Estado:** ligado e no CLI. Falta rodar a primeira coleta de verdade.
 
 ---
 
@@ -305,6 +303,38 @@ guarda ignorar uma chave de verdade colada ali por acidente.
 Em falso positivo sem marca, `git commit --no-verify` passa por cima — e vale
 avisar, para calibrar.
 
+## Rodando a coleta
+
+```bash
+nabote fetch --source x                    # baseline: timeline das sementes tier A
+nabote fetch --source x --teto-usd 0.50    # com teto explícito
+nabote fetch --source x --query "CPMI" --kind campanha --campaign C-01
+```
+
+Antes de gastar qualquer coisa, o comando imprime o que vai fazer:
+
+```
+fonte    twitterapi_io · baseline
+contas   150 tier A · 12 com cursor guardado
+teto     US$ 0.50 por ciclo
+tempo    ~13 min · 150 requisições a 5.2s cada (limite do tier gratuito)
+```
+
+No fim, o custo **medido** e o que o teto cortou:
+
+```
+custo    US$ 0.00432 · 432 créditos · saldo 9.550
+cortado  38 contas ficaram de fora pelo teto: umbelino, vania, … 
+```
+
+A chave sai do `.env` — o CLI carrega o arquivo sozinho, sem precisar de
+`source .env`. Variável já exportada no ambiente vence a do arquivo.
+
+**As sementes do X são handles**, não ids: `/twitter/user/last_tweets` pede
+`userName`. O id continua sendo a chave no banco, então troca de nome não
+duplica o ator — só faz o `fetch` daquele perfil voltar vazio, e isso aparece
+na contagem.
+
 ## Parte 6 — o teto de gasto
 
 ```
@@ -318,6 +348,29 @@ mesmo princípio dos `--max-events` e `--max-seconds` que o `fetch` já tem, ond
 hoje o custo é zero.
 
 A US$ 0,15 por mil tweets, US$ 1,00 por ciclo é o teto de 6.666 posts.
+
+**Como o freio funciona, e o que ele custa.** O saldo do provedor é a única
+fonte confiável de custo — a tabela de preço publicada não fecha com o
+medido (a primeira captura deu 18 créditos onde a tabela previa 45+). Mas
+**ler o saldo é uma requisição**: conferi-lo a cada página faria metade do que
+se paga ser para saber quanto se está pagando e, a 1 req/5 s, dobraria o tempo
+de parede.
+
+Então as duas coisas são separadas:
+
+| | fonte | frequência |
+|---|---|---|
+| `cost_usd` do run (**medido**) | saldo no início e no fim | 2 requisições, sempre |
+| gatilho do teto (**controle**) | saldo a cada N requisições | `conferir_saldo_a_cada`, padrão 10 |
+
+O excesso máximo vira o custo de N páginas — com N=10 e uma página a ~6
+créditos, US$ 0,0006 contra um teto de US$ 1,00 — e o erro é sempre para o
+lado de parar cedo. A leitura final está num `finally`: um run que morre no
+meio gastou dinheiro, e o custo dele fica gravado igual.
+
+**O que tornaria isso exato e de graça:** se a resposta de sucesso trouxer o
+crédito consumido num cabeçalho. Nunca vimos cabeçalho de chamada
+bem-sucedida, só o do 403. Vale conferir com `-i` na primeira coleta real.
 
 ## Se o provedor sumir
 

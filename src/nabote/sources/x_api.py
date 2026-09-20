@@ -256,6 +256,7 @@ class XApiSource:
     def __init__(self, api_key: str, *, contas: list[str] | None = None,
                  query: str | None = None, cursores: dict[str, str] | None = None,
                  paginas_por_conta: int = 1, teto_usd: float | None = None,
+                 conferir_saldo_a_cada: int = 10,
                  intervalo: float = INTERVALO_PADRAO, incluir_respostas: bool = True,
                  abrir: Any = None):
         if bool(contas) == bool(query):
@@ -266,10 +267,12 @@ class XApiSource:
         self.cursores = dict(cursores or {})
         self.paginas_por_conta = paginas_por_conta
         self.teto_usd = teto_usd
+        self.conferir_saldo_a_cada = max(1, conferir_saldo_a_cada)
         self.intervalo = intervalo
         self.incluir_respostas = incluir_respostas
         self._abrir = abrir or urllib.request.urlopen
         self._ultima = 0.0
+        self._desde_a_conferencia = 0
         self.skipped = 0
         self.saldo_inicial: int | None = None
         self.saldo_atual: int | None = None
@@ -328,9 +331,36 @@ class XApiSource:
 
     @property
     def gasto_usd(self) -> float:
+        """Gasto MEDIDO: a diferença entre dois saldos lidos no provedor.
+
+        Não é multiplicação de tabela de preço, e a diferença não é acadêmica —
+        a primeira captura custou 18 créditos onde a tabela publicada previa
+        45 ou mais. Número de custo em relatório sai daqui.
+        """
         if self.saldo_inicial is None or self.saldo_atual is None:
             return 0.0
         return max(0, self.saldo_inicial - self.saldo_atual) / CREDITOS_POR_USD
+
+    def _conferir_saldo(self, forcar: bool = False) -> None:
+        """Atualiza o saldo, mas NÃO a cada página.
+
+        Ler o saldo É uma requisição. Conferir a cada página faria metade do
+        que se paga ser para saber quanto se está pagando — e, a uma requisição
+        a cada 5 s, dobraria o tempo de parede: um baseline de 150 perfis iria
+        de 12,5 para 25 minutos.
+
+        O teto passa a ser conferido a cada N requisições. O excesso máximo
+        vira o custo de N páginas — com N=10 e uma página a ~6 créditos, são
+        US$ 0,0006 contra um teto de US$ 1,00 — e o erro é sempre para o lado
+        de parar cedo, nunca tarde. O custo gravado no run continua MEDIDO,
+        porque `forcar=True` no fim lê o saldo de verdade.
+        """
+        if self.teto_usd is None and not forcar:
+            return          # sem teto, o saldo só interessa no começo e no fim
+        self._desde_a_conferencia += 1
+        if forcar or self._desde_a_conferencia >= self.conferir_saldo_a_cada:
+            self._desde_a_conferencia = 0
+            self.saldo_atual = self.saldo()
 
     def _estourou(self) -> bool:
         return self.teto_usd is not None and self.gasto_usd >= self.teto_usd
@@ -342,10 +372,15 @@ class XApiSource:
         cada perfil vem do dicionário `cursores` — um firehose tem uma posição,
         uma coleta por perfil tem uma por perfil."""
         self.saldo_inicial = self.saldo_atual = self.saldo()
-        if self.query is not None:
-            yield from self._buscar(cursor)
-        else:
-            yield from self._timelines()
+        try:
+            if self.query is not None:
+                yield from self._buscar(cursor)
+            else:
+                yield from self._timelines()
+        finally:
+            # o saldo final vai no `finally` de propósito: um run que morreu no
+            # meio gastou dinheiro, e o custo dele precisa estar gravado igual.
+            self._conferir_saldo(forcar=True)
 
     def _buscar(self, cursor: str | None) -> Iterator[NormalizedEvent]:
         pagina = cursor or ""
@@ -363,7 +398,7 @@ class XApiSource:
                     self.skipped += 1
                     continue
                 yield ev
-            self.saldo_atual = self.saldo()
+            self._conferir_saldo()
             if not proxima:
                 self.frame["reached"] = 1
                 return
@@ -397,7 +432,7 @@ class XApiSource:
                     self.skipped += 1
                     continue
                 yield ev
-            self.saldo_atual = self.saldo()
+            self._conferir_saldo()
             if not proxima:
                 return
             pagina = proxima

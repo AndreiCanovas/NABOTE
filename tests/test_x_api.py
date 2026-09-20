@@ -307,8 +307,8 @@ class TestLacoDaFonte(unittest.TestCase):
         número de cobertura desconhecida não é número medido."""
         rede = _Rede({"userName=": _pagina([_tweet("1", "100")], None)},
                      saldos=[10000, 1000, 1000, 1000])
-        fonte = x_api.XApiSource("k", contas=["ua", "ub", "uc"],
-                                 teto_usd=0.05, intervalo=0, abrir=rede)
+        fonte = x_api.XApiSource("k", contas=["ua", "ub", "uc"], teto_usd=0.05,
+                                 conferir_saldo_a_cada=1, intervalo=0, abrir=rede)
         list(fonte.events())
         self.assertEqual(fonte.frame["stopped_by"], "budget")
         self.assertEqual(fonte.frame["left_out"], ["ub", "uc"])
@@ -352,6 +352,58 @@ class TestLacoDaFonte(unittest.TestCase):
             self.assertNotIn("SEGREDO", url)
 
 
+class TestQuantoCustaSaberOCusto(unittest.TestCase):
+    """Ler o saldo é uma requisição — então conferi-lo a cada página faria
+    metade do que se paga ser para saber quanto se está pagando, e dobraria o
+    tempo de parede a 1 req/5 s."""
+
+    def _saldos_pedidos(self, rede):
+        return sum(1 for u in rede.urls if "/oapi/my/info" in u)
+
+    def test_sem_teto_o_saldo_e_lido_so_no_inicio_e_no_fim(self):
+        rede = _Rede({"userName=": _pagina([_tweet("1", "100")], None)})
+        # `conferir_saldo_a_cada=1` de propósito: sem teto, nem assim o saldo
+        # pode ser lido no meio. Com N alto o teste passaria pelo motivo errado.
+        fonte = x_api.XApiSource("k", contas=["ua", "ub", "uc"],
+                                 conferir_saldo_a_cada=1, intervalo=0, abrir=rede)
+        list(fonte.events())
+        self.assertEqual(self._saldos_pedidos(rede), 2)
+
+    def test_com_teto_o_saldo_e_lido_a_cada_N_e_nao_a_cada_pagina(self):
+        rede = _Rede({"userName=": _pagina([_tweet("1", "100")], None)})
+        fonte = x_api.XApiSource("k", contas=[f"u{i}" for i in range(6)],
+                                 teto_usd=99.0, conferir_saldo_a_cada=3,
+                                 intervalo=0, abrir=rede)
+        list(fonte.events())
+        # 6 páginas -> 2 conferências periódicas, + inicial + final = 4
+        self.assertEqual(self._saldos_pedidos(rede), 4)
+
+    def test_o_saldo_final_e_lido_sempre_para_o_custo_ficar_medido(self):
+        """`cost_usd` no `collection_run` é a diferença de dois saldos reais.
+        Sem a leitura final ele sairia zerado, e um número de custo estimado
+        não cumpre a regra do projeto."""
+        rede = _Rede({"userName=": _pagina([_tweet("1", "100")], None)},
+                     saldos=[10000, 9900])
+        fonte = x_api.XApiSource("k", contas=["ua"], intervalo=0, abrir=rede)
+        list(fonte.events())
+        self.assertAlmostEqual(fonte.gasto_usd, 100 / 100_000, places=8)
+
+    def test_run_que_morre_no_meio_tem_o_custo_gravado_igual(self):
+        """Falhar não devolve o dinheiro: o saldo final vai num `finally`."""
+        class Explode(_Rede):
+            def __call__(self, req, timeout=None):
+                if "last_tweets" in req.full_url:
+                    self.urls.append(req.full_url)
+                    raise RuntimeError("a rede caiu")
+                return super().__call__(req, timeout)
+
+        rede = Explode({}, saldos=[10000, 9950])
+        fonte = x_api.XApiSource("k", contas=["ua"], intervalo=0, abrir=rede)
+        with self.assertRaises(RuntimeError):
+            list(fonte.events())
+        self.assertAlmostEqual(fonte.gasto_usd, 50 / 100_000, places=8)
+
+
 class TestLimiteDeTaxa(unittest.TestCase):
     def test_espera_entre_requisicoes(self):
         """1 req/5 s no tier gratuito. Sem a espera, a segunda chamada volta
@@ -361,9 +413,98 @@ class TestLimiteDeTaxa(unittest.TestCase):
         import time as _t
         inicio = _t.monotonic()
         list(fonte.events())
-        # saldo inicial + 2 timelines + 2 saldos = 5 requisições, 4 esperas
-        self.assertGreaterEqual(_t.monotonic() - inicio, 0.05 * 4)
+        # saldo inicial + 2 timelines + saldo final = 4 requisições, 3 esperas
+        self.assertGreaterEqual(_t.monotonic() - inicio, 0.05 * 3)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# a ponta do CLI
+# --------------------------------------------------------------------------
+
+class TestCarregarEnv(unittest.TestCase):
+    """O runbook manda a chave para o .env; sem isto o `fetch --source x` só
+    funcionaria depois de um `source .env` que ninguém lembra de dar."""
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli
+        self.cli = cli
+        self._tmp = tempfile.TemporaryDirectory()
+        self.env = Path(self._tmp.name) / ".env"
+
+    def tearDown(self):
+        import os
+        for k in ("NABOTE_X_API_KEY", "NABOTE_X_PROVIDER", "VAZIA"):
+            os.environ.pop(k, None)
+        self._tmp.cleanup()
+
+    def test_le_chave_e_ignora_comentario_e_linha_vazia(self):
+        self.env.write_text(
+            "# comentário\n\nNABOTE_X_PROVIDER=twitterapi_io\n"
+            "NABOTE_X_API_KEY=abc123\n", encoding="utf-8")   # guarda:permitido
+        lidas = self.cli.carregar_env(self.env)
+        self.assertEqual(lidas["NABOTE_X_PROVIDER"], "twitterapi_io")
+        self.assertEqual(lidas["NABOTE_X_API_KEY"], "abc123")
+
+    def test_variavel_ja_exportada_vence(self):
+        """Quem exportou foi explícito; o arquivo é o padrão, não a ordem."""
+        import os
+        os.environ["NABOTE_X_API_KEY"] = "da_sessao"
+        self.env.write_text("NABOTE_X_API_KEY=do_arquivo\n", encoding="utf-8")
+        self.cli.carregar_env(self.env)
+        self.assertEqual(os.environ["NABOTE_X_API_KEY"], "da_sessao")
+
+    def test_tira_aspas_do_valor(self):
+        self.env.write_text('NABOTE_X_API_KEY="entre_aspas"\n', encoding="utf-8")
+        self.assertEqual(self.cli.carregar_env(self.env)["NABOTE_X_API_KEY"],
+                         "entre_aspas")
+
+    def test_arquivo_ausente_nao_quebra(self):
+        self.assertEqual(self.cli.carregar_env(Path("/nao/existe/.env")), {})
+
+
+class TestSementesDoX(unittest.TestCase):
+    """A API do X pede `userName`, não id — então a semente é o handle."""
+
+    def setUp(self):
+        import tempfile
+        from nabote import db, identity
+        self.db, self.identity = db, identity
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "t.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        agora = db.utcnow()
+        for plat, uid, handle, tier in [
+                ("x", "100", "semente_a", "A"), ("x", "200", "semente_b", "A"),
+                ("x", "300", "mensal", "B"), ("x", "400", "nunca_coletado", "C"),
+                ("x", "500", None, "A"), ("bluesky", "did:plc:x", "outra_rede", "A")]:
+            self.conn.execute(
+                "INSERT INTO actor (platform, platform_user_id, handle, tier, "
+                "first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?)",
+                (plat, uid, handle, tier, agora, agora))
+
+    def tearDown(self):
+        self.conn.close(); self._tmp.cleanup()
+
+    def test_so_tier_a_do_x(self):
+        """Tier B é coleta mensal e tier C nunca é coletado — incluí-los aqui
+        faria o ciclo semanal pagar por quem não devia entrar nele."""
+        self.assertEqual(self.identity.seed_handles(self.conn, "x"),
+                         ["semente_a", "semente_b"])
+
+    def test_nao_vaza_semente_de_outra_plataforma(self):
+        self.assertNotIn("outra_rede", self.identity.seed_handles(self.conn, "x"))
+
+    def test_ator_sem_handle_fica_de_fora(self):
+        """Ator conhecido só pelo id não dá para pedir por `userName`. Entrar
+        na lista viraria uma requisição paga com resposta vazia."""
+        self.assertNotIn(None, self.identity.seed_handles(self.conn, "x"))
+        self.assertEqual(len(self.identity.seed_handles(self.conn, "x")), 2)
+
+    def test_tier_b_entra_quando_pedido(self):
+        self.assertEqual(self.identity.seed_handles(self.conn, "x", ("A", "B")),
+                         ["mensal", "semente_a", "semente_b"])

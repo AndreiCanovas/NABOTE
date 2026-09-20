@@ -128,6 +128,27 @@ def seed_dids(conn: sqlite3.Connection, tiers: tuple[str, ...] = ("A", "B")) -> 
     return [r["platform_user_id"] for r in rows]
 
 
+def seed_handles(conn: sqlite3.Connection, platform: str,
+                 tiers: tuple[str, ...] = ("A",)) -> list[str]:
+    """Handles das sementes de uma plataforma — o que a API do X pede.
+
+    O Jetstream filtra por DID, que é estável; `/twitter/user/last_tweets` pede
+    `userName`, que é o handle e muda. A alternativa seria resolver handle→id a
+    cada ciclo, o que custa uma requisição por perfil. Enquanto o handle
+    funcionar, ele é o parâmetro; o id continua sendo a chave no banco, então
+    uma troca de nome não duplica o ator — só faz o `fetch` daquele perfil
+    voltar vazio, e isso aparece na contagem.
+
+    Só tier A por padrão: tier B é coleta mensal e tier C nunca é coletado.
+    """
+    marcas = ",".join("?" * len(tiers))
+    rows = conn.execute(
+        f"SELECT handle FROM actor WHERE platform = ? AND tier IN ({marcas}) "
+        f"AND handle IS NOT NULL AND handle <> '' ORDER BY handle",
+        (platform, *tiers)).fetchall()
+    return [r["handle"] for r in rows]
+
+
 def search_actors(name: str, limit: int = 5) -> list[dict]:
     """Busca contas por nome. Devolve candidatos com handle, nome e seguidores.
 

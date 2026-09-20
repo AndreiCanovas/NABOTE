@@ -15,6 +15,96 @@ import sys
 from pathlib import Path
 
 from . import __version__, db, dossie, graph, identity, ingest, probe
+from .sources import x_api
+
+
+def carregar_env(caminho: Path = Path(".env")) -> dict[str, str]:
+    """Lê o `.env` para dentro de `os.environ`, sem sobrescrever o que já veio.
+
+    O runbook manda a chave para o `.env`; sem isto, `nabote fetch --source x`
+    só funcionaria depois de um `source .env` que ninguém lembra de dar. A
+    variável já exportada vence, porque quem exportou foi explícito.
+
+    Sem dependência: dotenv resolveria aspas e multilinha, e nada aqui precisa
+    disso — o arquivo tem chave, provedor e teto.
+    """
+    lidas: dict[str, str] = {}
+    if not caminho.exists():
+        return lidas
+    for linha in caminho.read_text(encoding="utf-8").splitlines():
+        linha = linha.strip()
+        if not linha or linha.startswith("#") or "=" not in linha:
+            continue
+        nome, _, valor = linha.partition("=")
+        nome, valor = nome.strip(), valor.strip().strip('"').strip("'")
+        if not nome:
+            continue
+        lidas[nome] = valor
+        os.environ.setdefault(nome, valor)
+    return lidas
+
+
+def _fonte_x(conn, args):
+    """Monta a fonte do X e imprime o que ela vai fazer ANTES de gastar.
+
+    A conferência prévia existe porque a primeira requisição já custa: sem ela,
+    descobrir que a lista de sementes está vazia ou que o teto é baixo demais
+    custaria uma chamada e cinco segundos de espera cada vez.
+    """
+    from .sources import XApiSource
+
+    carregar_env()
+    chave = os.environ.get("NABOTE_X_API_KEY", "").strip()
+    if not chave:
+        print("NABOTE_X_API_KEY não está no ambiente nem no .env.\n"
+              "Veja docs/x-api-setup.md, parte 2.", file=sys.stderr)
+        return None
+
+    teto = args.teto_usd
+    if teto is None:
+        try:
+            teto = float(os.environ.get("NABOTE_BUDGET_USD_PER_CYCLE", ""))
+        except ValueError:
+            teto = None
+
+    if args.query:
+        fonte = XApiSource(chave, query=args.query, teto_usd=teto,
+                           paginas_por_conta=args.paginas,
+                           intervalo=args.intervalo)
+        print(f"fonte    twitterapi_io · busca {args.query!r}")
+        requisicoes = args.paginas
+    else:
+        contas = identity.seed_handles(conn, x_api.PLATFORM)
+        if not contas:
+            print("nenhuma semente de X registrada (actor.platform='x', tier A).\n"
+                  "Registre as sementes antes de coletar.", file=sys.stderr)
+            return None
+        cursores = ingest.cursors_for(conn, XApiSource.name)
+        fonte = XApiSource(chave, contas=contas, cursores=cursores, teto_usd=teto,
+                           paginas_por_conta=args.paginas,
+                           intervalo=args.intervalo)
+        print(f"fonte    twitterapi_io · baseline")
+        print(f"contas   {len(contas)} tier A · "
+              f"{sum(1 for c in contas if c in cursores)} com cursor guardado")
+        requisicoes = len(contas) * args.paginas
+
+    print(f"teto     {'US$ %.2f por ciclo' % teto if teto else 'nenhum'}")
+    segundos = requisicoes * args.intervalo
+    quanto = f"{segundos:.0f}s" if segundos < 90 else f"{segundos / 60:.0f} min"
+    print(f"tempo    ~{quanto} · {requisicoes} requisições a "
+          f"{args.intervalo:g}s cada (limite do tier gratuito)")
+    return fonte
+
+
+def _custo_ate_aqui(conn, source) -> None:
+    """Quanto já foi gasto quando a coleta morre no meio.
+
+    Falhar não devolve o dinheiro. Sem isto, um run interrompido deixaria
+    `cost_usd` em zero e o custo acumulado do mês passaria a mentir.
+    """
+    if getattr(source, "saldo_inicial", None) is None:
+        return
+    print(f"gasto até aqui: US$ {source.gasto_usd:.5f}", file=sys.stderr)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -95,6 +185,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             from .sources import FixtureSource
             source = FixtureSource(Path(args.fixture))
             print(f"fonte    fixture {args.fixture}")
+        elif args.source == "x":
+            source = _fonte_x(conn, args)
+            if source is None:
+                return 1
         else:
             from .sources import JetstreamSource
             if args.seeds:
@@ -114,7 +208,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                   f"{'DIDs' if seeds else ''}".rstrip())
 
         cursor = ingest.get_cursor(conn, source.name) if not args.no_resume else None
-        print(f"cursor   {cursor or 'nenhum — começando do evento mais recente'}")
+        if args.source != "x" or args.query:
+            print(f"cursor   {cursor or 'nenhum — começando do evento mais recente'}")
         if args.max_events or args.max_seconds:
             teto = ", ".join(filter(None, [
                 f"{args.max_events} eventos" if args.max_events else None,
@@ -131,6 +226,36 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         except KeyboardInterrupt:
             print("\ninterrompido — o cursor foi salvo, `fetch` retoma daqui", file=sys.stderr)
             return 130
+        except x_api.ErroDoProvedor as erro:
+            print(f"\nprovedor recusou: {erro}", file=sys.stderr)
+            if erro.excesso:
+                print("limite de taxa — suba o --intervalo (tier gratuito: 1 req/5s)",
+                      file=sys.stderr)
+            elif erro.sem_credito:
+                print("crédito esgotado — recarregue no painel do provedor",
+                      file=sys.stderr)
+            _custo_ate_aqui(conn, source)
+            return 1
+        except OSError as erro:
+            # urllib envolve falha de DNS, TLS e conexão em URLError(OSError).
+            # Num coletor que cobra, a pergunta imediata é "fui cobrado?" — e a
+            # resposta é o saldo, não o traceback.
+            print(f"\nfalha de rede: {erro}", file=sys.stderr)
+            _custo_ate_aqui(conn, source)
+            return 1
+
+        if getattr(source, "saldo_inicial", None) is not None:
+            # atualiza o run com o custo MEDIDO — a diferença de dois saldos
+            # lidos no provedor, não uma multiplicação de tabela de preço
+            conn.execute("UPDATE collection_run SET cost_usd = ? WHERE run_id = ?",
+                         (source.gasto_usd, run_id))
+            print(f"custo    US$ {source.gasto_usd:.5f} · "
+                  f"{source.saldo_inicial - source.saldo_atual} créditos"
+                  f" · saldo {source.saldo_atual:,}".replace(",", "."))
+            fora = source.frame.get("left_out") or []
+            if fora:
+                print(f"cortado  {len(fora)} contas ficaram de fora pelo teto: "
+                      f"{', '.join(fora[:5])}{' …' if len(fora) > 5 else ''}")
 
         print(f"run #{run_id}")
         for key, value in stats.as_dict().items():
@@ -1417,6 +1542,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="ignora o cursor salvo e começa do zero")
     fetch.add_argument("--global", dest="global_firehose", action="store_true",
                        help="consome o firehose inteiro, sem filtro de sementes")
+    fetch.add_argument("--source", default="bluesky", choices=["bluesky", "x"],
+                       help="de onde coletar (padrão: bluesky, que é gratuito)")
+    fetch.add_argument("--query", help="--source x: busca por termo em vez de "
+                       "timeline das sementes; exige --kind campanha")
+    fetch.add_argument("--teto-usd", dest="teto_usd", type=float, default=None,
+                       help="--source x: teto de gasto do ciclo "
+                            "(padrão: NABOTE_BUDGET_USD_PER_CYCLE do .env)")
+    fetch.add_argument("--paginas", type=int, default=1,
+                       help="--source x: páginas por conta (padrão: 1)")
+    fetch.add_argument("--intervalo", type=float, default=x_api.INTERVALO_PADRAO,
+                       help=f"--source x: segundos entre requisições "
+                            f"(padrão: {x_api.INTERVALO_PADRAO}, limite do tier gratuito)")
 
     def _janela(p, com_view=False, com_core=False):
         p.add_argument("--window", help="janela YYYY-MM-DD (segunda-feira)")
