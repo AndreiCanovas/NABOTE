@@ -34,6 +34,11 @@ Ganho em relação ao arquivo do Zenodo: o objeto `author` vem embutido em CADA
 tweet, e em `retweeted_tweet`/`quoted_tweet` também. Ator Tier C nasce com id
 estável, nome e bio — sem uma chamada a mais, sem custo a mais.
 
+(Esta frase já foi só uma promessa: `bio_do_autor` existia e era chamada só no
+registro de sementes, enquanto a coleta descartava nome e bio de todo mundo. O
+grafo saía com cinco atores sem nome e o texto deles no payload já pago, ali ao
+lado. Documentar um ganho não o implementa.)
+
 LIMITE DE TAXA: 1 requisição a cada 5 segundos no tier gratuito. O `SKILL.md`
 do provedor anuncia ~200 QPS, que é conta paga. A diferença é de duas ordens de
 grandeza e decide quanto tempo um ciclo leva.
@@ -116,7 +121,9 @@ def _alvo(kind: str, tweet: dict[str, Any] | None) -> Target | None:
     if not uid:
         return None
     return Target(kind=kind, uid=str(uid), handle=autor.get("userName"),
-                  post_uid=str(tweet["id"]) if tweet.get("id") else None)
+                  post_uid=str(tweet["id"]) if tweet.get("id") else None,
+                  display_name=autor.get("name"), bio=bio_do_autor(autor),
+                  created_at=parse_data(autor.get("createdAt")))
 
 
 def normalize_tweet(tweet: dict[str, Any], *, cursor: str | None = None,
@@ -159,8 +166,12 @@ def normalize_tweet(tweet: dict[str, Any], *, cursor: str | None = None,
         uid = str(m.get("id_str") or "")
         if uid and uid not in ja:
             ja.add(uid)
+            # `user_mentions` tem `name`, não tem bio nem data de conta. Os
+            # ausentes ficam None de propósito: quem grava usa COALESCE, então
+            # None preserva o que um retuíte já tiver trazido do mesmo perfil.
             alvos.append(Target(kind=KIND_MENTION, uid=uid,
-                                handle=m.get("screen_name")))
+                                handle=m.get("screen_name"),
+                                display_name=m.get("name")))
 
     tipo = alvos[0].kind if alvos else "original"
     if tipo == KIND_MENTION:
@@ -174,6 +185,9 @@ def normalize_tweet(tweet: dict[str, Any], *, cursor: str | None = None,
         kind="post",
         actor_uid=str(autor["id"]),
         actor_handle=autor.get("userName"),
+        actor_display_name=autor.get("name"),
+        actor_bio=bio_do_autor(autor),
+        actor_created_at=parse_data(autor.get("createdAt")),
         occurred_at=quando,
         cursor=cursor,
         cursor_account=conta,

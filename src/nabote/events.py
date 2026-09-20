@@ -37,6 +37,12 @@ class Target:
     uid: str
     handle: str | None = None
     post_uid: str | None = None
+    # O alvo é justamente quem nunca é coletado, então o perfil dele só chega
+    # assim: embutido no post de quem o citou. Mesma regra do evento — None é
+    # "não veio", não "está vazio".
+    display_name: str | None = None
+    bio: str | None = None
+    created_at: str | None = None
 
 
 @dataclass
@@ -54,6 +60,13 @@ class NormalizedEvent:
     # conta paginada sobrescreveria o cursor de todas as anteriores.
     cursor_account: str = ""
     actor_handle: str | None = None
+    # Perfil que veio de carona no mesmo payload. None = a fonte não trouxe o
+    # campo, e ausência NÃO é apagamento: quem grava deixa o valor existente
+    # em paz. Um firehose que só dá handle não pode zerar a bio que uma
+    # resposta de API pagou para trazer.
+    actor_display_name: str | None = None
+    actor_bio: str | None = None
+    actor_created_at: str | None = None
     post_uid: str | None = None
     post_type: str | None = None
     text: str | None = None

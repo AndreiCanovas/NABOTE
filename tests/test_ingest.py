@@ -428,3 +428,65 @@ class TestRecorteDoRun(CursorTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerfilQueChegaPelaAresta(unittest.TestCase):
+    """Fontes de API trazem o perfil do alvo embutido no post de quem o citou.
+    Guardar isso é o que faz um ator Tier C aparecer no relatório com nome em
+    vez de id numérico, sem nenhuma requisição a mais.
+
+    A regra difícil é a segunda vez. A mesma conta reaparece como menção, que
+    traz `name` e não traz bio. Se a segunda passagem escrevesse o que veio,
+    apagaria a bio que a primeira pagou para trazer.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "i.db")
+        db.migrate(self.conn, ROOT / "migrations")
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _linha(self, uid):
+        return self.conn.execute(
+            "SELECT handle, display_name, bio, account_created_at FROM actor "
+            "WHERE platform_user_id = ?", (uid,)).fetchone()
+
+    def test_grava_nome_e_bio_do_ator(self):
+        ingest.upsert_actor(self.conn, "x", "900", "C", "fulano",
+                            display_name="Fulano da Silva", bio="deputado",
+                            account_created_at="2009-05-13T22:49:07Z")
+        r = self._linha("900")
+        self.assertEqual((r["display_name"], r["bio"]), ("Fulano da Silva", "deputado"))
+        self.assertEqual(r["account_created_at"], "2009-05-13T22:49:07Z")
+
+    def test_o_que_nao_veio_nao_apaga_o_que_ja_havia(self):
+        ingest.upsert_actor(self.conn, "x", "900", "C", "fulano",
+                            display_name="Fulano da Silva", bio="deputado")
+        # segunda passagem, vinda de uma menção: tem nome, não tem bio
+        ingest.upsert_actor(self.conn, "x", "900", "C", "fulano",
+                            display_name="Fulano da Silva")
+        self.assertEqual(self._linha("900")["bio"], "deputado")
+
+    def test_valor_novo_substitui_o_antigo(self):
+        """Bio muda, e a última vista é a boa — o cuidado é com ausência, não
+        com mudança."""
+        ingest.upsert_actor(self.conn, "x", "900", "C", "fulano", bio="deputado")
+        ingest.upsert_actor(self.conn, "x", "900", "C", "fulano", bio="senador")
+        self.assertEqual(self._linha("900")["bio"], "senador")
+
+    def test_o_alvo_da_aresta_nasce_com_perfil(self):
+        """O caminho inteiro: evento com alvo → ator Tier C legível."""
+        from nabote.events import Target
+        ev = NormalizedEvent(
+            platform="x", kind="post", actor_uid="100", actor_handle="quem_amplifica",
+            occurred_at="2026-09-20T20:20:42Z", post_uid="p1", post_type="repost",
+            targets=[Target(kind="repost", uid="200", handle="quem_e_amplificado",
+                            display_name="Quem É Amplificado", bio="a bio dele")])
+        run_id = ingest.start_run(self.conn, "teste")
+        ingest.handle_event(self.conn, run_id, ev, ingest.Stats())
+        r = self._linha("200")
+        self.assertEqual((r["display_name"], r["bio"]),
+                         ("Quem É Amplificado", "a bio dele"))

@@ -936,3 +936,45 @@ class TestTotalDeSementes(unittest.TestCase):
         saida = self._rodar()
         self.assertIn("2 registradas", saida)
         self.assertIn("total de sementes de x no banco: 2", saida)
+
+
+# --------------------------------------------------------------------------
+# o perfil que vem de carona — a economia central desta fonte
+# --------------------------------------------------------------------------
+
+class TestPerfilDeCarona(unittest.TestCase):
+    """O objeto `author` vem embutido em cada tweet, e também dentro de
+    `retweeted_tweet` e `quoted_tweet`. É o que permite um ator Tier C existir
+    com nome e bio sem nunca custar uma requisição.
+
+    Sem isto o grafo é legível só para quem decora id numérico: a saída da
+    primeira amostra trouxe cinco atores com `display_name` e `bio` vazios,
+    com o texto todo ali no payload já pago.
+    """
+
+    def test_o_autor_traz_nome_e_bio(self):
+        ev = x_api.normalize_tweet(FIXTURE["retuite_real"])
+        self.assertEqual(ev.actor_display_name, "Vergilio Sobrinho")
+        # armadilha 2: a bio do autor embutido mora em `profile_bio`
+        self.assertEqual(ev.actor_bio, "Deus, família e Flamengo!")
+
+    def test_o_autor_traz_a_data_de_criacao_da_conta(self):
+        """Em formato legado, aqui — armadilha 1."""
+        ev = x_api.normalize_tweet(FIXTURE["retuite_real"])
+        self.assertTrue(ev.actor_created_at.startswith("2009-05-13T22:49:07"))
+
+    def test_o_alvo_do_retuite_tambem_traz_perfil(self):
+        """Quem é retuitado nunca é coletado, e é justamente de quem se quer
+        saber o nome no relatório."""
+        alvo, = [a for a in x_api.normalize_tweet(FIXTURE["retuite_real"]).targets
+                 if a.kind == "repost"]
+        self.assertEqual(alvo.handle, "KimKataguiri")
+        self.assertEqual(alvo.display_name, "Kim Kataguiri")
+
+    def test_a_mencao_traz_o_nome_mas_nao_inventa_bio(self):
+        """`user_mentions` tem `name`, não tem bio. Campo ausente vira None e
+        não string vazia: None deixa o valor existente em paz, "" o apaga."""
+        ev = x_api.normalize_tweet(FIXTURE["resposta_com_mencao_extra"])
+        mencoes = [a for a in ev.targets if a.kind == "mention"]
+        self.assertTrue(mencoes)
+        self.assertIsNone(mencoes[0].bio)

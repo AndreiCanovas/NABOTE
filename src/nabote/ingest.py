@@ -44,7 +44,9 @@ class Stats:
 
 def upsert_actor(
     conn: sqlite3.Connection, platform: str, uid: str, tier: str,
-    handle: str | None = None, stats: Stats | None = None,
+    handle: str | None = None, stats: Stats | None = None, *,
+    display_name: str | None = None, bio: str | None = None,
+    account_created_at: str | None = None,
 ) -> int:
     """Devolve o actor_id, criando o ator se for a primeira vez que o vemos.
 
@@ -55,6 +57,12 @@ def upsert_actor(
 
     O handle é atualizado sempre que vier: ele muda com o tempo, e o último
     visto é o mais útil. O que nunca muda é o `uid`, que é a chave.
+
+    Nome, bio e data de criação seguem a mesma regra, com um cuidado a mais:
+    `COALESCE(?, coluna)`, para que uma fonte que não traz o campo não apague
+    o que outra trouxe. A mesma conta chega como alvo de retuíte (com bio
+    completa) e como menção (só com nome); sem o COALESCE, a ordem de chegada
+    dos eventos decidiria se o relatório tem bio — e ela é aleatória.
     """
     row = conn.execute(
         "SELECT actor_id, tier, handle FROM actor "
@@ -63,23 +71,21 @@ def upsert_actor(
 
     if row:
         sobe = _TIER_RANK.get(tier, 0) > _TIER_RANK.get(row["tier"], 0)
-        novo_handle = handle and handle != row["handle"]
-        if sobe or novo_handle:
-            conn.execute(
-                "UPDATE actor SET tier = ?, handle = ?, last_seen_at = ? WHERE actor_id = ?",
-                (tier if sobe else row["tier"], handle or row["handle"],
-                 utcnow(), row["actor_id"]),
-            )
-        else:
-            conn.execute("UPDATE actor SET last_seen_at = ? WHERE actor_id = ?",
-                         (utcnow(), row["actor_id"]))
+        conn.execute(
+            "UPDATE actor SET tier = ?, handle = ?, "
+            "display_name = COALESCE(?, display_name), bio = COALESCE(?, bio), "
+            "account_created_at = COALESCE(?, account_created_at), "
+            "last_seen_at = ? WHERE actor_id = ?",
+            (tier if sobe else row["tier"], handle or row["handle"],
+             display_name, bio, account_created_at, utcnow(), row["actor_id"]),
+        )
         return row["actor_id"]
 
     now = utcnow()
     cur = conn.execute(
-        "INSERT INTO actor (platform, platform_user_id, handle, tier, "
-        "first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?)",
-        (platform, uid, handle, tier, now, now),
+        "INSERT INTO actor (platform, platform_user_id, handle, display_name, bio, "
+        "account_created_at, tier, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (platform, uid, handle, display_name, bio, account_created_at, tier, now, now),
     )
     if stats:
         stats.actors_new += 1
@@ -142,7 +148,9 @@ def handle_event(conn: sqlite3.Connection, run_id: int, ev: NormalizedEvent,
     if store_raw:
         _store_raw(conn, run_id, ev.platform, ev.post_uid, ev.raw)
     actor_id = upsert_actor(conn, ev.platform, ev.actor_uid, author_tier,
-                            ev.actor_handle, stats)
+                            ev.actor_handle, stats,
+                            display_name=ev.actor_display_name, bio=ev.actor_bio,
+                            account_created_at=ev.actor_created_at)
 
     # O alvo principal vira o pai do post. É por aqui que um ator Tier C entra
     # no grafo sem nunca ter sido coletado.
@@ -152,7 +160,10 @@ def handle_event(conn: sqlite3.Connection, run_id: int, ev: NormalizedEvent,
     parent_uid = None
     if principal:
         parent_actor_id = upsert_actor(conn, ev.platform, principal.uid, "C",
-                                       principal.handle, stats)
+                                       principal.handle, stats,
+                                       display_name=principal.display_name,
+                                       bio=principal.bio,
+                                       account_created_at=principal.created_at)
         parent_uid = principal.post_uid
 
     cur = conn.execute(
@@ -171,7 +182,9 @@ def handle_event(conn: sqlite3.Connection, run_id: int, ev: NormalizedEvent,
 
     for alvo in ev.targets:
         dst_id = (parent_actor_id if (principal and alvo is principal)
-                  else upsert_actor(conn, ev.platform, alvo.uid, "C", alvo.handle, stats))
+                  else upsert_actor(conn, ev.platform, alvo.uid, "C", alvo.handle, stats,
+                                    display_name=alvo.display_name, bio=alvo.bio,
+                                    account_created_at=alvo.created_at))
         if dst_id == actor_id:
             continue
         cur = conn.execute(
