@@ -125,15 +125,23 @@ def register_seeds(
     return ok, falhas
 
 
-def seed_dids(conn: sqlite3.Connection, tiers: tuple[str, ...] = ("A", "B")) -> list[str]:
-    """DIDs registrados como semente — o filtro que vai para o Jetstream."""
+def seed_uids(conn: sqlite3.Connection, platform: str,
+              tiers: tuple[str, ...] = ("A", "B")) -> list[str]:
+    """Ids de semente de UMA plataforma. O `platform` é obrigatório de
+    propósito: a versão que o assumia calada contou sementes de Bluesky depois
+    de registrar 26 de X e imprimiu zero na mesma saída."""
     placeholders = ",".join("?" * len(tiers))
     rows = conn.execute(
         f"SELECT platform_user_id FROM actor WHERE platform = ? AND tier IN ({placeholders}) "
         f"ORDER BY platform_user_id",
-        (PLATFORM, *tiers),
+        (platform, *tiers),
     ).fetchall()
     return [r["platform_user_id"] for r in rows]
+
+
+def seed_dids(conn: sqlite3.Connection, tiers: tuple[str, ...] = ("A", "B")) -> list[str]:
+    """DIDs registrados como semente — o filtro que vai para o Jetstream."""
+    return seed_uids(conn, PLATFORM, tiers)
 
 
 def register_seeds_x(

@@ -14,7 +14,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import __version__, db, dossie, graph, identity, ingest, probe
+from . import __version__, atproto, db, dossie, graph, identity, ingest, probe
 from .sources import x_api
 
 
@@ -1178,7 +1178,9 @@ def cmd_seeds(args: argparse.Namespace) -> int:
                   f"{gasto} créditos")
         if falhas and not ok:
             return 1
-        print(f"total de sementes no banco: {len(identity.seed_dids(conn))}")
+        plat = x_api.PLATFORM if args.source == "x" else atproto.PLATFORM
+        print(f"total de sementes de {plat} no banco: "
+              f"{len(identity.seed_uids(conn, plat))}")
         return 0
     finally:
         conn.close()

@@ -58,10 +58,16 @@ BASE = "https://api.twitterapi.io"
 # 100.000 créditos = US$ 1,00, na tabela do provedor.
 CREDITOS_POR_USD = 100_000
 
-# Tier gratuito: uma requisição a cada 5 segundos. A folga de 0,2 s existe
-# porque o servidor mede o intervalo do lado dele, e um relógio adiantado
-# transforma o limite num 429 que custa uma requisição inteira.
-INTERVALO_PADRAO = 5.2
+# Tier gratuito: uma requisição a cada 5 segundos, medidos do lado do servidor
+# — na hora em que ele RECEBE, não na hora em que a gente envia. A diferença é
+# a latência da rede, que oscila. Com 5,2 s a margem era de 4% e o primeiro
+# registro de sementes real perdeu 5 dos 31 handles para 429, espalhados pelo
+# lote. 5,5 s custa 9 s a mais num lote de 31 e devolve margem de 10%.
+INTERVALO_PADRAO = 5.5
+
+# O 429 é o erro mais transitório que existe aqui e o provedor diz na mensagem
+# exatamente quanto esperar. Desistir nele obriga a refazer o lote inteiro.
+TENTATIVAS_NO_429 = 3
 
 # Formato legado do Twitter, usado dentro do objeto `author` embutido.
 _LEGADO = "%a %b %d %H:%M:%S %z %Y"
@@ -249,19 +255,42 @@ class Transporte:
     """
 
     def __init__(self, api_key: str, *, intervalo: float = INTERVALO_PADRAO,
-                 abrir: Any = None):
+                 abrir: Any = None, dormir: Any = None,
+                 tentativas_no_429: int = TENTATIVAS_NO_429):
         self.api_key = api_key
         self.intervalo = intervalo
+        self.tentativas_no_429 = max(1, tentativas_no_429)
         self._abrir = abrir or urllib.request.urlopen
+        self._dormir = dormir or time.sleep
         self._ultima = 0.0
 
     def _esperar(self) -> None:
         falta = self.intervalo - (time.monotonic() - self._ultima)
         if falta > 0:
-            time.sleep(falta)
+            self._dormir(falta)
         self._ultima = time.monotonic()
 
     def get(self, caminho: str, **params: Any) -> dict[str, Any]:
+        """Uma requisição, repetindo enquanto o que voltar for limite de taxa.
+
+        A espera CRESCE a cada tentativa. Repetir com a mesma margem que acabou
+        de falhar é pedir o mesmo 429 de novo — e um 429 gasta a requisição sem
+        trazer dado, então a repetição cega custa dinheiro além de tempo.
+
+        Só limite de taxa é repetido. Um 403 de chave errada devolve a mesma
+        coisa na segunda vez, e esperar 11 segundos para descobrir isso não
+        ajuda ninguém.
+        """
+        for tentativa in range(self.tentativas_no_429):
+            try:
+                return self._uma_requisicao(caminho, **params)
+            except ErroDoProvedor as exc:
+                if not exc.excesso or tentativa == self.tentativas_no_429 - 1:
+                    raise
+                self._dormir(self.intervalo * (tentativa + 2))
+        raise AssertionError("laço de tentativas saiu sem retorno nem erro")
+
+    def _uma_requisicao(self, caminho: str, **params: Any) -> dict[str, Any]:
         self._esperar()
         url = f"{BASE}{caminho}"
         if params:

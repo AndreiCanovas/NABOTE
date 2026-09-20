@@ -797,3 +797,142 @@ class TestDespachoDoCLI(unittest.TestCase):
         fonte = inspect.getsource(cli.main)
         nomes = set(re.findall(r'"([a-z-]+)": cmd_\w+', fonte))
         self.assertEqual(nomes - set(sub.choices), set())
+
+
+# --------------------------------------------------------------------------
+# o 429, que a primeira execução real transformou em cinco sementes perdidas
+# --------------------------------------------------------------------------
+
+class TestRetentativaNo429(unittest.TestCase):
+    """O 429 do tier gratuito não é o pedido estar errado: é o relógio do
+    servidor discordando do nosso por uma fração de segundo.
+
+    No primeiro registro de sementes de verdade, 5 dos 31 handles morreram
+    assim — espalhados pelo lote, não em rajada, que é a assinatura de
+    oscilação de rede contra uma margem apertada. Desistir num 429 obriga a
+    refazer o lote, e refazer custa mais do que esperar.
+    """
+
+    @staticmethod
+    def _rede_que_estoura(vezes: int):
+        import io, urllib.error
+        estado = {"restam": vezes}
+
+        def abrir(req, timeout=None):
+            if estado["restam"]:
+                estado["restam"] -= 1
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "Too Many Requests", {},
+                    io.BytesIO(json.dumps(FIXTURE["erro_429"]).encode("utf-8")))
+            return _Resposta({"data": {"id": "1", "userName": "ok"}})
+        return abrir
+
+    def test_espera_e_repete(self):
+        dormidas: list[float] = []
+        t = x_api.Transporte("k", intervalo=1, abrir=self._rede_que_estoura(1),
+                             dormir=dormidas.append)
+        self.assertEqual(t.get("/x")["data"]["id"], "1")
+        self.assertTrue(any(d > 0 for d in dormidas),
+                        "repetiu sem esperar — o 429 seguinte é certo")
+
+    def test_a_espera_cresce_a_cada_tentativa(self):
+        """Repetir com a mesma margem que acabou de falhar falha de novo."""
+        dormidas: list[float] = []
+        t = x_api.Transporte("k", intervalo=1, abrir=self._rede_que_estoura(2),
+                             dormir=dormidas.append)
+        t.get("/x")
+        # o ritmo normal dorme `intervalo`; só o recuo do 429 dorme mais
+        recuos = [d for d in dormidas if d > t.intervalo]
+        self.assertEqual(len(recuos), 2, f"recuos: {dormidas}")
+        self.assertGreater(recuos[1], recuos[0])
+
+    def test_desiste_e_diz_por_que(self):
+        t = x_api.Transporte("k", intervalo=0, abrir=self._rede_que_estoura(99),
+                             dormir=lambda s: None)
+        with self.assertRaises(x_api.ErroDoProvedor) as ctx:
+            t.get("/x")
+        self.assertTrue(ctx.exception.excesso)
+
+    def test_erro_que_nao_e_de_taxa_nao_repete(self):
+        """Repetir um 403 de chave errada gasta tempo e talvez crédito para
+        receber exatamente a mesma resposta."""
+        import io, urllib.error
+        chamadas = {"n": 0}
+
+        def abrir(req, timeout=None):
+            chamadas["n"] += 1
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "Forbidden", {},
+                io.BytesIO(json.dumps(FIXTURE["erro_403"]).encode("utf-8")))
+
+        t = x_api.Transporte("k", intervalo=0, abrir=abrir, dormir=lambda s: None)
+        with self.assertRaises(x_api.ErroDoProvedor):
+            t.get("/x")
+        self.assertEqual(chamadas["n"], 1)
+
+    def test_a_margem_padrao_nao_e_de_quatro_por_cento(self):
+        """5,2 s contra um limite de 5 s deixou 16% do lote real cair. A
+        margem tem que cobrir oscilação de rede, não empatar com ela."""
+        self.assertGreaterEqual(x_api.INTERVALO_PADRAO, 5.5)
+
+
+# --------------------------------------------------------------------------
+# a última linha do `seeds`, que é a que a pessoa lê para saber se funcionou
+# --------------------------------------------------------------------------
+
+class TestTotalDeSementes(unittest.TestCase):
+    """`seeds --source x` gravou 26 atores e imprimiu "total de sementes no
+    banco: 0". As duas afirmações estavam no mesmo parágrafo de saída.
+
+    A contagem vinha de `seed_dids`, que filtra pela plataforma do Bluesky
+    porque nasceu para montar o filtro do Jetstream. Número que contradiz a
+    linha de cima destrói a confiança em toda a saída — inclusive na parte
+    que estava certa.
+    """
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli, db, identity
+        self.cli, self.identity = cli, identity
+        self._tmp = tempfile.TemporaryDirectory()
+        self.raiz = Path(self._tmp.name)
+        self.conn = db.connect(self.raiz / "s.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        self.conn.close()
+        (self.raiz / "lista.txt").write_text("?Fulano\nCiclano\n", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _rodar(self):
+        import argparse, contextlib, io as _io, os
+        perfis = {"Fulano": "111", "Ciclano": "222"}
+
+        def abrir(req, timeout=None):
+            if "/oapi/my/info" in req.full_url:
+                return _Resposta({"recharge_credits": 0,
+                                  "total_bonus_credits": 10000})
+            nome = req.full_url.rsplit("userName=", 1)[-1]
+            return _Resposta({"data": {"id": perfis[nome], "userName": nome,
+                                       "name": nome, "description": "",
+                                       "createdAt": "2012-08-15T01:22:19.000000Z"}})
+
+        real = x_api.Transporte
+        os.environ["NABOTE_X_API_KEY"] = "chave_falsa_de_teste"
+        x_api.Transporte = lambda k, **kw: real(k, intervalo=0, abrir=abrir,
+                                                dormir=lambda s: None)
+        args = argparse.Namespace(db=self.raiz / "s.db",
+                                  file=str(self.raiz / "lista.txt"),
+                                  source="x", tier="A")
+        saida = _io.StringIO()
+        try:
+            with contextlib.redirect_stdout(saida):
+                self.cli.cmd_seeds(args)
+        finally:
+            x_api.Transporte = real
+        return saida.getvalue()
+
+    def test_o_total_conta_o_que_acabou_de_ser_gravado(self):
+        saida = self._rodar()
+        self.assertIn("2 registradas", saida)
+        self.assertIn("total de sementes de x no banco: 2", saida)
