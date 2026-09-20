@@ -206,6 +206,45 @@ Verificação de que nunca vazou:
 git log -p --all -S 'twitterapi' -- . | head -40   # vazio é o resultado bom
 ```
 
+### A guarda de pre-commit
+
+O `.gitignore` protege o arquivo `.env`. Não protege o caso que de fato vaza
+chave em projeto pequeno: colar a chave em OUTRO lugar — um script de teste, um
+comando de exemplo, um arquivo temporário que vira commit.
+
+`tools/guarda_segredo.py` roda antes de cada commit e o recusa se encontrar
+atribuição de segredo com valor concreto, ou o próprio `.env` entrando por
+`git add -f`. **Precisa ser ativada uma vez por clone**, porque `.git/hooks`
+não é versionado:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Confira que pegou — deve responder `.githooks`:
+
+```bash
+git config core.hooksPath
+```
+
+Ela distingue `API_KEY=a1b2c3...` de `-H "x-api-key: $NABOTE_X_API_KEY"` pelo
+lado direito: `$VAR`, `%s`, `<placeholder>` e palavras de exemplo são
+referência; string opaca de 16+ caracteres é conteúdo.
+
+Para o caso legítimo — um teste que precisa de string com cara de chave, ou
+documentação que mostra um exemplo — a marca `# guarda:permitido` na linha
+isenta **aquela linha**, e só ela:
+
+```python
+API_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6  # guarda:permitido
+```
+
+Por linha e não por arquivo de propósito: isentar um arquivo inteiro faria a
+guarda ignorar uma chave de verdade colada ali por acidente.
+
+Em falso positivo sem marca, `git commit --no-verify` passa por cima — e vale
+avisar, para calibrar.
+
 ## Parte 6 — o teto de gasto
 
 ```

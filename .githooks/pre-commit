@@ -1,0 +1,7 @@
+#!/bin/sh
+# Guarda de segredo. Ativada por:  git config core.hooksPath .githooks
+#
+# Hooks vivem em .git/hooks, que não é versionado — então um hook útil some
+# no próximo clone e não protege mais ninguém. `core.hooksPath` aponta o git
+# para um diretório que ESTÁ no repositório, e aí a proteção viaja junto.
+exec python3 "$(git rev-parse --show-toplevel)/tools/guarda_segredo.py"

@@ -78,6 +78,7 @@ recentes recusa instalação global de qualquer jeito.
 
 ```bash
 pip install -e .
+git config core.hooksPath .githooks   # guarda de segredo, uma vez por clone
 nabote init
 
 # escreva seus perfis em seeds/meus.txt (um handle por linha) e registre:
@@ -664,6 +665,7 @@ tests/test_schema.py         invariantes aplicados pelo banco
 tests/test_ingest.py         o que o parser deduz das arestas
 tests/test_graph.py          recuperação de comunidades plantadas
 tests/synthetic.py           gerador determinístico de grafo com gabarito
+tools/guarda_segredo.py      recusa commit com segredo (ver docs/x-api-setup.md)
 seeds/exemplo.txt            formato da lista curada
 ```
 
