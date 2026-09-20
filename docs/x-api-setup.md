@@ -303,6 +303,48 @@ guarda ignorar uma chave de verdade colada ali por acidente.
 Em falso positivo sem marca, `git commit --no-verify` passa por cima — e vale
 avisar, para calibrar.
 
+## De onde vem a lista de sementes
+
+A lista responde **de quem baixar os posts** — e é o limite do que o grafo
+consegue ver. Não é a lista de quem aparece no relatório: o sistema de tiers
+separa as duas coisas, e ator Tier C nunca é coletado, existindo no grafo só
+como alvo de aresta.
+
+Daí a inversão que decide a curadoria: **quem é muito amplificado chega de
+graça.** Quando alguém retuíta @nikolas_dm, ele entra no banco com id, nome e
+bio, pagos pelo post de quem retuitou. Pagar pela timeline dele é pagar por um
+nó que o grafo já teria.
+
+O que **não** chega de graça é a aresta. Ela nasce do post de quem amplifica, e
+esse post só existe se aquela conta for coletada. Então a lista quer duas
+coisas, por razões opostas:
+
+| | por que entra | como se acha |
+|---|---|---|
+| **fábricas de aresta** | só a coleta as traz | medindo — ninguém lembra o handle de quem retuíta 40 vezes por dia |
+| **vozes** | chegam de graça como Tier C, mas o **texto** delas não, e é o texto que nomeia comunidade e sub-pauta | curadoria |
+
+Uma lista feita só de memória é só a segunda metade.
+
+### `nabote candidatos` — a primeira metade, medida
+
+```bash
+nabote candidatos --platform x --top 40 --excluir seeds/politica_br_x.txt
+```
+
+Varre `interaction` e ordena por **alvos distintos**: quantas contas
+*diferentes* o perfil amplificou. Quinhentos retuítes na mesma conta são uma
+aresta de peso 500; duzentos em cento e cinquenta contas são 150 arestas, e é
+isso que dá estrutura ao grafo.
+
+A coluna `semanas` é consistência: quem só apareceu num pico não é boa semente
+permanente.
+
+**O que o número não resolve, e fica para quem cura:** a base é de 2023. Conta
+morre, troca de nome, perde relevância. E a coleta do arquivo foi por Trending
+Topic, então quem é influente sem nunca subir em TT está sub-representado.
+É lista de candidatos a conferir, não lista para adotar.
+
 ## Registrando as sementes
 
 Antes de coletar, o banco precisa saber **quem** coletar. A lista é curada à

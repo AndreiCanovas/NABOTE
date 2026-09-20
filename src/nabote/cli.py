@@ -1289,6 +1289,45 @@ def _arquivo_de_entrada(caminho: str, sufixos: tuple[str, ...]) -> Path | None:
     return alvo
 
 
+def cmd_candidatos(args: argparse.Namespace) -> int:
+    """Sugere sementes a partir do que a base já mediu. A escolha é sua."""
+    conn = db.connect(args.db)
+    try:
+        _avisa_migracao(conn)
+        ja = []
+        if args.excluir:
+            ja = identity.parse_seed_file(
+                Path(args.excluir).read_text(encoding="utf-8"))
+
+        print("varrendo interaction — leva alguns segundos numa base grande\n")
+        linhas = identity.candidatos_a_semente(
+            conn, args.platform, limite=args.top, desde=args.desde, excluir=ja)
+        if not linhas:
+            print("nenhum candidato. A base tem interações desta plataforma?",
+                  file=sys.stderr)
+            return 1
+
+        print(f"{'handle':<24} {'alvos':>7} {'inter.':>8} {'sem.':>5} "
+              f"{'recebe':>8} {'posts':>7}  razão")
+        print("-" * 76)
+        for r in linhas:
+            print(f"{r['handle'][:24]:<24} {r['alvos']:>7,} {r['interacoes']:>8,} "
+                  f"{r['semanas']:>5} {r['entradas']:>8,} {r['posts']:>7,}  "
+                  f"{r['razao']}".replace(",", "."))
+
+        print(f"\n{len(linhas)} candidatos" +
+              (f", fora os {len(ja)} que já estão em {args.excluir}" if ja else ""))
+        print("\nALVOS é a coluna que ordena: quantas contas DIFERENTES o perfil\n"
+              "amplificou. Quinhentos retuítes na mesma conta são uma aresta de\n"
+              "peso 500; duzentos em cento e cinquenta contas são 150 arestas.\n"
+              "\nfábrica  produz aresta — só a coleta traz, é o que se paga\n"
+              "voz      chega de graça como Tier C, mas o texto dela não\n"
+              "\nO arquivo é de 2023: conferir antes de adotar.")
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Mostra esquema e amostra de uma base externa, antes de escrever adaptador."""
     alvo = _arquivo_de_entrada(args.path, (".zip", ".parquet"))
@@ -1727,6 +1766,15 @@ def build_parser() -> argparse.ArgumentParser:
     disc.add_argument("--name", action="append", help="nome a buscar (repetível)")
     disc.add_argument("--file", help="arquivo com um nome por linha")
     disc.add_argument("--limit", type=int, default=5, help="candidatos por nome")
+
+    cand = sub.add_parser("candidatos",
+                          help="sugere sementes a partir do que a base já mediu")
+    cand.add_argument("--platform", default="x", help="plataforma (padrão: x)")
+    cand.add_argument("--top", type=int, default=40, help="quantos mostrar")
+    cand.add_argument("--desde", help="só interações a partir desta data (ISO)")
+    cand.add_argument("--excluir", help="arquivo de sementes já registradas, "
+                                        "para não repetir quem já está na lista")
+    cand.set_defaults(func=cmd_candidatos)
 
     seeds = sub.add_parser("seeds", help="registra ou lista a lista curada de perfis")
     seeds.add_argument("--file", help="arquivo com um handle ou DID por linha")

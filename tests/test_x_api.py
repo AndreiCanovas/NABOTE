@@ -626,3 +626,128 @@ class TestRegistroDeSementes(unittest.TestCase):
                                "b": self._perfil("2", "b")})
         self.identity.register_seeds_x(self.conn, ["a", "b"], tr)
         self.assertEqual(self.identity.seed_handles(self.conn, "x"), ["a", "b"])
+
+
+class TestCandidatosASemente(unittest.TestCase):
+    """A resposta óbvia — "os de maior PageRank" — dá justamente quem NÃO
+    precisa entrar na lista, porque ator muito amplificado chega de graça."""
+
+    def setUp(self):
+        import tempfile
+        from nabote import db, identity
+        self.db, self.identity = db, identity
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "t.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        self.run_id = self.conn.execute(
+            "INSERT INTO collection_run (source, kind, started_at) "
+            "VALUES ('x_parquet','baseline',?)", (db.utcnow(),)).lastrowid
+        self._ator = {}
+
+    def tearDown(self):
+        self.conn.close(); self._tmp.cleanup()
+
+    def ator(self, handle):
+        if handle not in self._ator:
+            agora = db.utcnow() if False else self.db.utcnow()
+            self._ator[handle] = self.conn.execute(
+                "INSERT INTO actor (platform, platform_user_id, handle, tier,"
+                " first_seen_at, last_seen_at) VALUES ('x',?,?,'C',?,?)",
+                (f"id_{handle}", handle, agora, agora)).lastrowid
+        return self._ator[handle]
+
+    def amplifica(self, origem, alvos, quando="2023-06-19T12:00:00Z"):
+        """Cada par (origem, alvo) vira um post e uma interação."""
+        src = self.ator(origem)
+        for i, alvo in enumerate(alvos):
+            pid = self.conn.execute(
+                "INSERT INTO post (platform, platform_post_id, actor_id,"
+                " created_at, post_type, collected_at, run_id)"
+                " VALUES ('x',?,?,?,'repost',?,?)",
+                (f"{origem}_{alvo}_{i}_{quando}", src, quando, quando,
+                 self.run_id)).lastrowid
+            self.conn.execute(
+                "INSERT INTO interaction (post_id, src_actor_id, dst_actor_id,"
+                " kind, occurred_at) VALUES (?,?,?,'repost',?)",
+                (pid, src, self.ator(alvo), quando))
+
+    def test_ordena_por_alvos_distintos_e_nao_por_volume(self):
+        """Quinhentos retuítes na mesma conta são UMA aresta de peso 500;
+        duzentos em contas diferentes são duzentas arestas."""
+        self.amplifica("martelo", ["famoso"] * 40)          # 40 interações, 1 alvo
+        self.amplifica("espalhador", [f"a{i}" for i in range(12)])   # 12 alvos
+
+        top = self.identity.candidatos_a_semente(self.conn, "x", limite=5)
+        self.assertEqual(top[0]["handle"], "espalhador")
+        self.assertEqual(top[0]["alvos"], 12)
+        martelo = [r for r in top if r["handle"] == "martelo"][0]
+        self.assertEqual((martelo["alvos"], martelo["interacoes"]), (1, 40))
+
+    def test_o_mais_amplificado_nao_lidera(self):
+        """@famoso recebe de todo mundo e não amplifica ninguém: chega de graça
+        como Tier C. Pagar pela timeline dele é pagar por um nó que já viria."""
+        for i in range(20):
+            self.amplifica(f"fa{i}", ["famoso"])
+        self.amplifica("espalhador", [f"a{i}" for i in range(9)])
+
+        top = self.identity.candidatos_a_semente(self.conn, "x", limite=5)
+        self.assertEqual(top[0]["handle"], "espalhador")
+        self.assertNotIn("famoso", [r["handle"] for r in top])
+
+    def test_classifica_fabrica_e_voz(self):
+        self.amplifica("espalhador", [f"a{i}" for i in range(10)])
+        for i in range(30):
+            self.amplifica(f"fa{i}", ["meio_famoso"])
+        self.amplifica("meio_famoso", ["a1", "a2"])   # amplifica pouco, recebe muito
+
+        por_handle = {r["handle"]: r for r in
+                      self.identity.candidatos_a_semente(self.conn, "x", limite=50)}
+        self.assertEqual(por_handle["espalhador"]["razao"], "fábrica")
+        self.assertEqual(por_handle["meio_famoso"]["razao"], "voz")
+
+    def test_quem_ja_esta_na_lista_nao_volta(self):
+        self.amplifica("espalhador", [f"a{i}" for i in range(9)])
+        self.amplifica("outro", [f"b{i}" for i in range(8)])
+        top = self.identity.candidatos_a_semente(
+            self.conn, "x", limite=10, excluir=["@Espalhador"])
+        self.assertNotIn("espalhador", [r["handle"] for r in top])
+        self.assertIn("outro", [r["handle"] for r in top])
+
+    def test_conta_em_quantas_semanas_apareceu(self):
+        """Quem só apareceu num pico não é boa semente permanente."""
+        self.amplifica("constante", ["a1", "a2"], "2023-06-05T12:00:00Z")
+        self.amplifica("constante", ["a3", "a4"], "2023-06-19T12:00:00Z")
+        self.amplifica("pico", ["b1", "b2", "b3", "b4"], "2023-06-19T12:00:00Z")
+
+        por = {r["handle"]: r for r in
+               self.identity.candidatos_a_semente(self.conn, "x", limite=10)}
+        self.assertEqual(por["constante"]["semanas"], 2)
+        self.assertEqual(por["pico"]["semanas"], 1)
+
+    def test_corte_por_data(self):
+        self.amplifica("velho", [f"v{i}" for i in range(9)], "2023-01-10T12:00:00Z")
+        self.amplifica("novo", [f"n{i}" for i in range(5)], "2023-06-19T12:00:00Z")
+        top = self.identity.candidatos_a_semente(
+            self.conn, "x", limite=10, desde="2023-06-01")
+        self.assertEqual([r["handle"] for r in top], ["novo"])
+
+    def test_nao_vaza_outra_plataforma(self):
+        self.amplifica("do_x", [f"a{i}" for i in range(5)])
+        agora = self.db.utcnow()
+        bsky = self.conn.execute(
+            "INSERT INTO actor (platform, platform_user_id, handle, tier,"
+            " first_seen_at, last_seen_at) VALUES ('bluesky','did:plc:z','do_bsky',"
+            "'C',?,?)", (agora, agora)).lastrowid
+        pid = self.conn.execute(
+            "INSERT INTO post (platform, platform_post_id, actor_id, created_at,"
+            " post_type, collected_at, run_id) VALUES ('bluesky','p1',?,?,"
+            "'repost',?,?)", (bsky, agora, agora, self.run_id)).lastrowid
+        self.conn.execute(
+            "INSERT INTO interaction (post_id, src_actor_id, dst_actor_id, kind,"
+            " occurred_at) VALUES (?,?,?,'repost',?)",
+            (pid, bsky, self.ator("do_x"), agora))
+
+        handles = [r["handle"] for r in
+                   self.identity.candidatos_a_semente(self.conn, "x", limite=10)]
+        self.assertIn("do_x", handles)
+        self.assertNotIn("do_bsky", handles)

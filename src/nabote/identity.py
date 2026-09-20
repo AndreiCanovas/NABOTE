@@ -184,6 +184,77 @@ def register_seeds_x(
     return ok, falhas
 
 
+def candidatos_a_semente(
+    conn: sqlite3.Connection, platform: str, *, limite: int = 40,
+    desde: str | None = None, excluir: Iterable[str] = (),
+) -> list[dict]:
+    """Quem vale a pena COLETAR, segundo o que a base já mediu.
+
+    A INVERSÃO QUE IMPORTA: a resposta óbvia — "os de maior PageRank" — dá
+    justamente quem NÃO precisa entrar na lista. Ator muito amplificado chega
+    de graça como Tier C, pelos posts de quem o amplifica; pagar pela timeline
+    dele é pagar por um nó que o grafo já teria.
+
+    O que não chega de graça é a ARESTA. Ela nasce do post de quem amplifica, e
+    esse post só existe se aquela conta for coletada. Por isso a ordenação é
+    por ALVOS DISTINTOS — quantas pessoas diferentes o ator amplificou — e não
+    por volume: quinhentos retuítes na mesma conta são uma aresta de peso 500;
+    duzentos em cento e cinquenta contas são 150 arestas, e é isso que dá
+    estrutura ao grafo.
+
+    Duas coisas que o número não resolve e ficam para quem cura:
+
+    - O arquivo é de 2023. Conta morre, troca de nome, perde relevância. Isto
+      é lista de candidatos a conferir, não lista para adotar.
+    - A coleta do arquivo foi por Trending Topic, então quem é influente sem
+      nunca subir em TT está sub-representado aqui.
+    """
+    fora = {h.lstrip("@").lower() for h in excluir if h}
+    corte = "AND i.occurred_at >= ?" if desde else ""
+    params: list = [platform]
+    if desde:
+        params.append(desde)
+
+    rows = conn.execute(
+        f"""
+        WITH saidas AS (
+          SELECT i.src_actor_id AS aid,
+                 COUNT(*)                       AS interacoes,
+                 COUNT(DISTINCT i.dst_actor_id)  AS alvos,
+                 COUNT(DISTINCT strftime('%Y-%W', i.occurred_at)) AS semanas
+          FROM interaction i
+          JOIN actor a ON a.actor_id = i.src_actor_id
+          WHERE a.platform = ? {corte}
+          GROUP BY i.src_actor_id
+        )
+        SELECT a.handle, a.platform_user_id AS uid, a.display_name,
+               s.interacoes, s.alvos, s.semanas,
+               (SELECT COUNT(*) FROM interaction d
+                 WHERE d.dst_actor_id = a.actor_id) AS entradas,
+               (SELECT COUNT(*) FROM post p
+                 WHERE p.actor_id = a.actor_id) AS posts
+        FROM saidas s JOIN actor a ON a.actor_id = s.aid
+        WHERE a.handle IS NOT NULL AND a.handle <> ''
+        ORDER BY s.alvos DESC, s.interacoes DESC
+        LIMIT ?
+        """, (*params, limite * 3)).fetchall()
+
+    saida = []
+    for r in rows:
+        if r["handle"].lower() in fora:
+            continue
+        # `fábrica` produz aresta e é o que só a coleta traz; `voz` chega de
+        # graça como alvo, mas o TEXTO dela não — e o texto é o que nomeia
+        # comunidade e sub-pauta. As duas entram na lista, por razões opostas.
+        razao = ("fábrica" if r["alvos"] >= max(3, r["entradas"])
+                 else "voz" if r["entradas"] > r["alvos"] * 3
+                 else "ambos")
+        saida.append({**dict(r), "razao": razao})
+        if len(saida) >= limite:
+            break
+    return saida
+
+
 def seed_handles(conn: sqlite3.Connection, platform: str,
                  tiers: tuple[str, ...] = ("A",)) -> list[str]:
     """Handles das sementes de uma plataforma — o que a API do X pede.
