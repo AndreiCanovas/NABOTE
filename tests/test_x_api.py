@@ -103,25 +103,65 @@ class TestArestas(unittest.TestCase):
                          ("reply", "758264276", "nikolas_dm"))
 
     def test_retuite_vira_aresta(self):
-        """ATENÇÃO: este caso usa o bloco sintético do fixture. Nenhuma das
-        amostras reais trouxe `retweeted_tweet` preenchido, então a forma foi
-        inferida por simetria com `quoted_tweet`. Confirmar contra a API antes
-        de confiar em número de amplificação."""
-        ev = x_api.normalize_tweet(FIXTURE["retweet_sintetico"])
+        """Confirmado contra a API: `retweeted_tweet` é um tweet aninhado
+        completo, com o autor dentro — a mesma forma de `quoted_tweet`."""
+        ev = x_api.normalize_tweet(FIXTURE["retuite_real"])
         self.assertEqual(ev.post_type, "repost")
-        (alvo,) = ev.targets
-        self.assertEqual((alvo.kind, alvo.uid), ("repost", "14594813"))
+        self.assertEqual(ev.actor_uid, "39859804")
+        repost = [a for a in ev.targets if a.kind == "repost"]
+        self.assertEqual([(a.uid, a.handle) for a in repost],
+                         [("1494658207", "KimKataguiri")])
 
-    def test_mencao_nao_e_emitida(self):
-        """Armadilha 3: `entities` vem `{}`, sem `user_mentions`. Extrair do
-        texto daria handle sem id, e handle muda — cada troca de nome viraria
-        um ator novo. A lacuna fica registrada em vez de virar dado ruim."""
-        for chave in ("last_tweets", "advanced_search"):
-            tweets = x_api.tweets_da_resposta(FIXTURE[chave])
-            for t in tweets:
-                self.assertEqual(t.get("entities"), {})
-        ev = x_api.normalize_tweet(FIXTURE["advanced_search"]["tweets"][0])
-        self.assertNotIn("mention", [a.kind for a in ev.targets])
+
+class TestMencao(unittest.TestCase):
+    """`entities.user_mentions` traz id estável — mas num retuíte ela contém o
+    autor retuitado, e numa resposta contém quem foi respondido."""
+
+    def test_o_retuitado_nao_vira_aresta_duas_vezes(self):
+        """O prefixo "RT @fulano:" põe o autor retuitado em user_mentions. Sem
+        descontar, a mesma relação entra como repost E como menção, e o peso de
+        amplificação sai inflado."""
+        rt = FIXTURE["retuite_real"]
+        mencionados = {m["id_str"] for m in rt["entities"]["user_mentions"]}
+        self.assertIn("1494658207", mencionados)   # o retuitado está lá
+
+        ev = x_api.normalize_tweet(rt)
+        self.assertEqual([a.kind for a in ev.targets], ["repost"])
+        self.assertEqual(len({a.uid for a in ev.targets}), len(ev.targets))
+
+    def test_o_respondido_nao_vira_aresta_duas_vezes(self):
+        ev = x_api.normalize_tweet(FIXTURE["resposta_com_mencao_extra"])
+        por_uid = {a.uid: a.kind for a in ev.targets}
+        self.assertEqual(por_uid["758264276"], "reply")
+
+    def test_terceiro_mencionado_vira_aresta_de_mencao(self):
+        """Quem é mencionado e não é alvo por outra via é aresta de menção —
+        com id, que é o que permite seguir a conta depois de trocar de nome."""
+        ev = x_api.normalize_tweet(FIXTURE["resposta_com_mencao_extra"])
+        mencao = [a for a in ev.targets if a.kind == "mention"]
+        self.assertEqual([(a.uid, a.handle) for a in mencao],
+                         [("39522911", "ptbrasil")])
+
+    def test_mencionar_nao_muda_o_tipo_do_post(self):
+        """Quem só menciona escreveu um original. `post_type` é uma coluna só,
+        e 'mention' não é um dos valores que ela aceita."""
+        so_mencao = dict(FIXTURE["last_tweets"]["data"]["tweets"][0])
+        so_mencao["entities"] = {"user_mentions": [
+            {"id_str": "39522911", "screen_name": "ptbrasil"}]}
+        ev = x_api.normalize_tweet(so_mencao)
+        self.assertEqual(ev.post_type, "original")
+        self.assertEqual([a.kind for a in ev.targets], ["mention"])
+
+    def test_entities_vazio_nao_quebra(self):
+        """Foi este caso que me fez concluir errado que o campo não existia:
+        tweet sem menção traz `entities` como `{}`."""
+        ev = x_api.normalize_tweet(FIXTURE["last_tweets"]["data"]["tweets"][0])
+        self.assertEqual(ev.targets, [])
+
+    def test_mencao_sem_id_e_ignorada(self):
+        torto = dict(FIXTURE["last_tweets"]["data"]["tweets"][0])
+        torto["entities"] = {"user_mentions": [{"screen_name": "sem_id"}]}
+        self.assertEqual(x_api.normalize_tweet(torto).targets, [])
 
 
 class TestDescarte(unittest.TestCase):

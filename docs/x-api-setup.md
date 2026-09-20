@@ -203,8 +203,11 @@ todas com teste que quebra se o conserto for revertido:
    `profile_bio.description`. No endpoint de perfil é o contrário. Ler só o
    primeiro faz todo ator que nasce como alvo de aresta chegar sem bio, em
    silêncio.
-3. **`entities` do tweet vem `{}`**, sem `user_mentions`. Menção não sai
-   daqui com id.
+3. **A menção já está contada por outra aresta.** `entities.user_mentions`
+   traz `id_str`, mas num retuíte ela contém o autor retuitado (por causa do
+   prefixo `RT @fulano:`) e numa resposta contém quem foi respondido. Emitir
+   sem descontar infla o peso de amplificação. Só vira menção quem não é
+   alvo por outra via no mesmo post.
 
 E um limite que nem a doc nem o catálogo mencionavam: **1 requisição a cada 5
 segundos no tier gratuito** (o `SKILL.md` deles anuncia ~200 QPS, que é conta
@@ -215,14 +218,35 @@ timeline, 1 página de busca — custou **18 créditos**, ou US$ 0,00018. A
 estimativa a priori pela tabela de preço errava por 35×, que é o argumento
 para medir.
 
-### Lacunas conhecidas
+### Uma conclusão errada que a amostra maior desfez
 
-- **Retuíte não foi validado contra a API.** Nenhuma das amostras trouxe
-  `retweeted_tweet` preenchido; a forma foi inferida por simetria com
-  `quoted_tweet`, e o teste está marcado como tal. Confirmar antes de confiar
-  em número de amplificação.
-- **Menção não vira aresta.** Extrair do texto daria handle sem id, e handle
-  muda — cada troca de nome viraria um ator novo.
+A primeira leitura afirmou que `entities` vinha sempre `{}` e que menção não
+era extraível com id. Estava errado: o campo vinha vazio porque **aqueles
+tweets não mencionavam ninguém**. Com `filter:nativeretweets`, `user_mentions`
+apareceu preenchido, com `id_str` e `screen_name`.
+
+Ausência de dado não é ausência de campo — e a amostra que decide um formato
+precisa conter o caso, não só não contradizê-lo. O operador que a resolveu:
+
+```
+query=CPMI filter:nativeretweets
+```
+
+A busca do X **exclui retuíte por padrão**; sem o operador, nenhuma página
+traz `retweeted_tweet` preenchido, e a conclusão fácil é que o campo não serve.
+
+### Como pegar uma amostra que contenha o caso
+
+```bash
+curl -s -H "x-api-key: $NABOTE_X_API_KEY" --get \
+  --data-urlencode "query=CPMI filter:nativeretweets" \
+  --data-urlencode "queryType=Latest" \
+  "https://api.twitterapi.io/twitter/tweet/advanced_search"
+```
+
+`--data-urlencode` deixa a codificação com o curl. Escrever `%20` e `%40` à mão
+é como o primeiro teste foi escrito, e ele procurou o texto literal `RT @` —
+que só acha retuíte manual à moda antiga, não retuíte nativo.
 
 ## Parte 5 — higiene da chave
 

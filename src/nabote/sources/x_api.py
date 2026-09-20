@@ -17,11 +17,18 @@ todas capazes de custar horas se descobertas depois:
    tem a bio e `profile_bio` não existe. Ler só o primeiro faz todo ator que
    nasce como alvo de aresta chegar sem bio, em silêncio.
 
-3. `entities` DO TWEET VEM `{}`. É onde `user_mentions` estaria, e nas amostras
-   ela não veio — nem em tweet com texto longo. Menção não é extraível daqui
-   com id; sobra o handle no texto, que não identifica conta que trocou de nome.
-   Por isso este módulo NÃO emite aresta de menção: emitir a partir do texto
-   criaria ator novo a cada troca de handle. Fica registrado como lacuna.
+3. A MENÇÃO JÁ ESTÁ CONTADA POR OUTRA ARESTA, e emiti-la de novo infla o grafo.
+   `entities.user_mentions` traz `id_str` e `screen_name` — id estável, o que
+   é bom. Mas num retuíte ela contém o autor retuitado, por causa do prefixo
+   "RT @fulano:"; numa resposta, contém quem foi respondido. Emitir menção sem
+   descontar já-cobertos conta a mesma relação duas vezes em `edge_window`, e
+   o peso de amplificação sai inflado. Aqui só vira menção quem não é alvo de
+   repost, resposta ou citação no mesmo post.
+
+   (Esta entrada já esteve errada: com base em amostras onde `entities` vinha
+   `{}`, o módulo afirmava que menção não era extraível com id. O campo vinha
+   vazio porque aqueles tweets não mencionavam ninguém. Ausência de dado não
+   é ausência de campo.)
 
 Ganho em relação ao arquivo do Zenodo: o objeto `author` vem embutido em CADA
 tweet, e em `retweeted_tweet`/`quoted_tweet` também. Ator Tier C nasce com id
@@ -42,7 +49,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from ..events import KIND_QUOTE, KIND_REPLY, KIND_REPOST, NormalizedEvent, Target
+from ..events import (KIND_MENTION, KIND_QUOTE, KIND_REPLY, KIND_REPOST,
+                      NormalizedEvent, Target)
 
 PLATFORM = "x"
 BASE = "https://api.twitterapi.io"
@@ -137,7 +145,21 @@ def normalize_tweet(tweet: dict[str, Any], *, cursor: str | None = None,
     if qt:
         alvos.append(qt)
 
+    # Menção por último, e só de quem ainda não é alvo por outra via — ver
+    # armadilha 3. `tipo` sai de alvos[0], então a menção nunca rouba o rótulo
+    # de um post que é retuíte ou resposta.
+    ja = {a.uid for a in alvos}
+    for m in (tweet.get("entities") or {}).get("user_mentions") or []:
+        uid = str(m.get("id_str") or "")
+        if uid and uid not in ja:
+            ja.add(uid)
+            alvos.append(Target(kind=KIND_MENTION, uid=uid,
+                                handle=m.get("screen_name")))
+
     tipo = alvos[0].kind if alvos else "original"
+    if tipo == KIND_MENTION:
+        # menção não é um tipo de post: quem só menciona escreveu um original
+        tipo = "original"
     # `repost` e `quote` já são os nomes de post_type; `reply` também. A
     # coincidência é do vocabulário de `events.py`, não acidente.
 
