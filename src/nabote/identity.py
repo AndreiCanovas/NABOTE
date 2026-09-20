@@ -184,6 +184,11 @@ def register_seeds_x(
     return ok, falhas
 
 
+# Abaixo disto o perfil não dá estrutura ao grafo: amplificar duas contas é
+# duas arestas, e não distingue um ator de ruído de fundo.
+LARGURA_MINIMA = 3
+
+
 def candidatos_a_semente(
     conn: sqlite3.Connection, platform: str, *, limite: int = 40,
     desde: str | None = None, excluir: Iterable[str] = (),
@@ -246,9 +251,18 @@ def candidatos_a_semente(
         # `fábrica` produz aresta e é o que só a coleta traz; `voz` chega de
         # graça como alvo, mas o TEXTO dela não — e o texto é o que nomeia
         # comunidade e sub-pauta. As duas entram na lista, por razões opostas.
-        razao = ("fábrica" if r["alvos"] >= max(3, r["entradas"])
-                 else "voz" if r["entradas"] > r["alvos"] * 3
-                 else "ambos")
+        #
+        # `pouco` é a quarta classe, e ela existe porque a versão sem ela
+        # rotulava de `ambos` quem não é nenhum dos dois: quarenta retuítes numa
+        # conta só, recebendo zero, produz UMA aresta de peso 40 e não entrega
+        # nem estrutura nem texto. Chamar isso de "ambos" numa tabela que se lê
+        # para decidir é pior do que não rotular.
+        largo = r["alvos"] >= LARGURA_MINIMA
+        amplificado = r["entradas"] > r["alvos"] * 3
+        razao = ("ambos" if largo and amplificado
+                 else "voz" if amplificado
+                 else "fábrica" if largo
+                 else "pouco")
         saida.append({**dict(r), "razao": razao})
         if len(saida) >= limite:
             break

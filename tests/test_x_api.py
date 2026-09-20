@@ -694,16 +694,32 @@ class TestCandidatosASemente(unittest.TestCase):
         self.assertEqual(top[0]["handle"], "espalhador")
         self.assertNotIn("famoso", [r["handle"] for r in top])
 
-    def test_classifica_fabrica_e_voz(self):
+    def test_classifica_as_quatro_situacoes(self):
         self.amplifica("espalhador", [f"a{i}" for i in range(10)])
         for i in range(30):
             self.amplifica(f"fa{i}", ["meio_famoso"])
         self.amplifica("meio_famoso", ["a1", "a2"])   # amplifica pouco, recebe muito
+        self.amplifica("martelo", ["a1"] * 40)        # volume numa conta só
+        for i in range(60):
+            self.amplifica(f"fb{i}", ["hub"])
+        self.amplifica("hub", [f"c{i}" for i in range(12)])  # amplifica E recebe
 
-        por_handle = {r["handle"]: r for r in
-                      self.identity.candidatos_a_semente(self.conn, "x", limite=50)}
-        self.assertEqual(por_handle["espalhador"]["razao"], "fábrica")
-        self.assertEqual(por_handle["meio_famoso"]["razao"], "voz")
+        por = {r["handle"]: r for r in
+               self.identity.candidatos_a_semente(self.conn, "x", limite=99)}
+        self.assertEqual(por["espalhador"]["razao"], "fábrica")
+        self.assertEqual(por["meio_famoso"]["razao"], "voz")
+        self.assertEqual(por["hub"]["razao"], "ambos")
+
+    def test_volume_numa_conta_so_nao_e_ambos(self):
+        """Quarenta retuítes na mesma conta produzem UMA aresta de peso 40:
+        não entrega estrutura nem texto. Chamar de `ambos` numa tabela que se
+        lê para decidir induz a pagar por quem não devia entrar."""
+        self.amplifica("martelo", ["famoso"] * 40)
+        por = {r["handle"]: r for r in
+               self.identity.candidatos_a_semente(self.conn, "x", limite=99)}
+        self.assertEqual(por["martelo"]["razao"], "pouco")
+        self.assertEqual((por["martelo"]["alvos"], por["martelo"]["interacoes"]),
+                         (1, 40))
 
     def test_quem_ja_esta_na_lista_nao_volta(self):
         self.amplifica("espalhador", [f"a{i}" for i in range(9)])
@@ -751,3 +767,33 @@ class TestCandidatosASemente(unittest.TestCase):
                    self.identity.candidatos_a_semente(self.conn, "x", limite=10)]
         self.assertIn("do_x", handles)
         self.assertNotIn("do_bsky", handles)
+
+
+class TestDespachoDoCLI(unittest.TestCase):
+    """O `main` despacha por um dicionário de nomes, não pelo `set_defaults`
+    do argparse. Registrar o subparser não basta — e um `--help` passa, porque
+    nunca chega ao despacho. Foi assim que `candidatos` foi entregue quebrado."""
+
+    def test_todo_subcomando_registrado_tem_funcao(self):
+        from nabote import cli
+        import inspect
+
+        parser = cli.build_parser()
+        sub = [a for a in parser._subparsers._group_actions][0]
+        registrados = set(sub.choices)
+
+        fonte = inspect.getsource(cli.main)
+        sem_funcao = {n for n in registrados if f'"{n}":' not in fonte}
+        self.assertEqual(sem_funcao, set(),
+                         f"subcomando sem entrada no despacho: {sem_funcao}")
+
+    def test_o_despacho_nao_tem_nome_que_o_parser_desconhece(self):
+        """Entrada órfã no dicionário é comando que ninguém consegue chamar."""
+        from nabote import cli
+        import inspect, re
+
+        parser = cli.build_parser()
+        sub = [a for a in parser._subparsers._group_actions][0]
+        fonte = inspect.getsource(cli.main)
+        nomes = set(re.findall(r'"([a-z-]+)": cmd_\w+', fonte))
+        self.assertEqual(nomes - set(sub.choices), set())

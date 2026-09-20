@@ -338,7 +338,17 @@ aresta de peso 500; duzentos em cento e cinquenta contas são 150 arestas, e é
 isso que dá estrutura ao grafo.
 
 A coluna `semanas` é consistência: quem só apareceu num pico não é boa semente
-permanente.
+permanente. E a `razão` separa quatro situações:
+
+| | o que é | entra? |
+|---|---|---|
+| `fábrica` | amplifica muita gente diferente | **sim** — só a coleta traz |
+| `voz` | é muito amplificada, amplifica pouco | sim, mas pelo texto, não pela aresta |
+| `ambos` | as duas coisas | sim |
+| `pouco` | volume concentrado em poucas contas | não |
+
+`pouco` existe porque quarenta retuítes na mesma conta produzem **uma** aresta
+de peso 40: não entrega estrutura nem texto.
 
 **O que o número não resolve, e fica para quem cura:** a base é de 2023. Conta
 morre, troca de nome, perde relevância. E a coleta do arquivo foi por Trending

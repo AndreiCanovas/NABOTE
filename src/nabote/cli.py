@@ -1774,8 +1774,6 @@ def build_parser() -> argparse.ArgumentParser:
     cand.add_argument("--desde", help="só interações a partir desta data (ISO)")
     cand.add_argument("--excluir", help="arquivo de sementes já registradas, "
                                         "para não repetir quem já está na lista")
-    cand.set_defaults(func=cmd_candidatos)
-
     seeds = sub.add_parser("seeds", help="registra ou lista a lista curada de perfis")
     seeds.add_argument("--file", help="arquivo com um handle ou DID por linha")
     seeds.add_argument("--source", default="bluesky", choices=["bluesky", "x"],
@@ -1805,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:
             "compare": cmd_compare, "radar": cmd_radar, "dossie": cmd_dossie,
             "label": cmd_label,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
+            "candidatos": cmd_candidatos,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)
 
