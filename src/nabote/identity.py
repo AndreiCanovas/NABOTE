@@ -68,10 +68,18 @@ def resolve_handle(handle: str) -> str:
 
 
 def parse_seed_file(text: str) -> list[str]:
-    """Uma entrada por linha; `#` comenta. Aceita handle OU DID."""
+    """Uma entrada por linha; `#` comenta. Aceita handle OU DID.
+
+    `?handle` é marca de curadoria: "não confirmei se esta conta é esta". A
+    marca não é parte do handle e sai aqui, porque quem sabe se a conta existe
+    é o registro — que resolve cada entrada contra a plataforma e devolve
+    FALHOU para o que não existe. Deixar o `?` passar faria o contrário:
+    gastaria uma requisição por entrada marcada para descobrir que uma conta
+    chamada `?Fulano` não existe, escondendo a pergunta real.
+    """
     entries = []
     for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
+        line = line.split("#", 1)[0].strip().lstrip("?").strip()
         if line:
             entries.append(line)
     return entries

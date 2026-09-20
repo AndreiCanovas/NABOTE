@@ -44,6 +44,25 @@ class TestSeedFile(unittest.TestCase):
         self.assertEqual(identity.parse_seed_file(texto),
                          ["fulano.bsky.social", "did:plc:abc123", "@ciclano"])
 
+    def test_marca_de_incerteza_nao_gruda_no_handle(self):
+        """`?handle` é anotação do curador — "não confirmei este" — e está na
+        lista de X para ser resolvida no registro, que é quem sabe se a conta
+        existe. Se o `?` chegasse ao provedor, toda entrada marcada falharia,
+        gastando uma requisição para dizer que `?Fulano` não existe."""
+        texto = "?FernandoHaddad   # confirmar\n?ErikaHilton\nLulaOficial\n"
+        self.assertEqual(identity.parse_seed_file(texto),
+                         ["FernandoHaddad", "ErikaHilton", "LulaOficial"])
+
+    def test_a_lista_de_x_versionada_sai_limpa(self):
+        """O teste acima prova a regra; este prova o arquivo que de fato vai ao
+        provedor. Handle de X é só letra, número e sublinhado: qualquer outro
+        caractere sobrando é anotação que vazou da curadoria para a chamada."""
+        texto = (ROOT / "seeds" / "politica_br_x.txt").read_text(encoding="utf-8")
+        entradas = identity.parse_seed_file(texto)
+        self.assertTrue(entradas)
+        for e in entradas:
+            self.assertRegex(e, r"^[A-Za-z0-9_]{1,15}$", f"entrada suja: {e!r}")
+
 
 class TestRegisterSeeds(unittest.TestCase):
     def setUp(self):
