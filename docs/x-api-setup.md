@@ -3,7 +3,8 @@
 Runbook do passo 5. Você executa este documento uma vez; depois ele serve para
 quando a chave vazar, o crédito acabar ou o provedor sumir.
 
-**Estado:** aguardando a conta ser criada. Nada em `sources/x_api.py` ainda.
+**Estado:** conta criada (20/09/2026). Faltam os endpoints; nada em
+`sources/x_api.py` ainda.
 
 ---
 
@@ -106,19 +107,22 @@ qualquer coisa.
 Com o crédito de teste. O objetivo não é ver dado bonito: é descobrir o formato
 exato dos campos aninhados antes de escrever o tradutor.
 
-A chave sai do `.env` e nunca aparece na tela nem no histórico do shell:
+Um comando. A chave sai do `.env` e nunca aparece na tela nem no histórico
+do shell:
 
 ```bash
-cd ~/NABOTE && set -a && source .env && set +a
-
-curl -s -D /tmp/headers.txt \
-  -H "X-API-Key: $NABOTE_X_API_KEY" \
-  "https://api.twitterapi.io/<CAMINHO>" \
-  -o /tmp/body.json
-
-cat /tmp/headers.txt
-head -c 3000 /tmp/body.json
+cd ~/NABOTE
+set -a; source .env; set +a
+curl -s -i -H "X-API-Key: $NABOTE_X_API_KEY" "https://api.twitterapi.io/<CAMINHO>" | head -c 4000
 ```
+
+| Pedaço | O que faz |
+|---|---|
+| `set -a; source .env; set +a` | lê o `.env` e deixa a chave disponível como variável, sem imprimir |
+| `-s` | silencioso, sem barra de progresso |
+| `-i` | inclui os cabeçalhos de resposta na saída, junto com o corpo |
+| `-H "X-API-Key: $..."` | manda a chave; o `$` faz o shell substituir, então ela não fica escrita |
+| `\| head -c 4000` | corta a saída para não inundar o terminal |
 
 > **`<CAMINHO>` e o nome do cabeçalho de autenticação ainda não estão
 > confirmados.** O proxy da sessão de desenvolvimento bloqueia o domínio
@@ -126,7 +130,8 @@ head -c 3000 /tmp/body.json
 > valores reais na doc deles antes de rodar — se o cabeçalho não for
 > `X-API-Key`, troque.
 
-**Os cabeçalhos importam mais que o corpo.** É onde o consumo de crédito
+**Os cabeçalhos importam mais que o corpo** — são as primeiras linhas que
+o `-i` faz sair, antes do JSON. É onde o consumo de crédito
 costuma vir. Se o provedor devolver quanto a chamada custou,
 `collection_run.cost_usd` vira número **medido**; se não devolver, vira
 estimativa — e aí precisa sair marcada como estimativa, porque a regra do
