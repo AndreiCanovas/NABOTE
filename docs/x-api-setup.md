@@ -124,18 +124,36 @@ curl -s -i -H "X-API-Key: $NABOTE_X_API_KEY" "https://api.twitterapi.io/<CAMINHO
 | `-H "X-API-Key: $..."` | manda a chave; o `$` faz o shell substituir, então ela não fica escrita |
 | `\| head -c 4000` | corta a saída para não inundar o terminal |
 
-> **`<CAMINHO>` e o nome do cabeçalho de autenticação ainda não estão
-> confirmados.** O proxy da sessão de desenvolvimento bloqueia o domínio
-> `twitterapi.io`, então a documentação não pôde ser lida de dentro. Pegue os
-> valores reais na doc deles antes de rodar — se o cabeçalho não for
-> `X-API-Key`, troque.
+Base e cabeçalho, **confirmados** contra o catálogo oficial deles
+(`kaitoInfra/twitterapi-io`, no GitHub — o proxy bloqueia `twitterapi.io` e
+`docs.twitterapi.io`, mas o repositório da skill traz o mesmo conteúdo):
 
-**Os cabeçalhos importam mais que o corpo** — são as primeiras linhas que
-o `-i` faz sair, antes do JSON. É onde o consumo de crédito
-costuma vir. Se o provedor devolver quanto a chamada custou,
-`collection_run.cost_usd` vira número **medido**; se não devolver, vira
-estimativa — e aí precisa sair marcada como estimativa, porque a regra do
-projeto é que número em página é medido.
+```
+https://api.twitterapi.io     +     cabeçalho  x-api-key: <chave>
+```
+
+Os três endpoints que o NABOTE usa:
+
+| Uso | Caminho e parâmetro |
+|---|---|
+| perfil → tabela `actor` | `/twitter/user/info?userName=` |
+| baseline (timeline de um perfil) | `/twitter/user/last_tweets?userName=` + `cursor`, `includeReplies` |
+| campanha (busca por termo) | `/twitter/tweet/advanced_search?query=` + `queryType`, `cursor` |
+| saldo da conta | `/oapi/my/info` |
+
+**O nome do parâmetro muda de endpoint para endpoint** e não há regra: é
+`userName` num, `user_id` noutro, `username` todo minúsculo num terceiro.
+Copie exato do catálogo, nunca normalize.
+
+**O custo pode ser medido, e não estimado.** `/oapi/my/info` devolve
+`{recharge_credits, total_bonus_credits}` — o saldo da conta. Lido antes e
+depois de um run, a diferença é quanto aquele run gastou de fato, a 100.000
+créditos por US$ 1,00. É isso que faz `collection_run.cost_usd` cumprir a regra
+do projeto em vez de carregar uma multiplicação de tabela de preço.
+
+**Cuidado com o mínimo por requisição:** US$ 0,00015 são cobrados mesmo quando
+a resposta vem vazia. Um teto de gasto que só conta tweets subestima o custo de
+uma coleta com muitas páginas vazias.
 
 Antes de colar qualquer saída em qualquer lugar, **passe o olho**: a resposta
 não deve conter a chave, mas o cabeçalho de requisição às vezes é ecoado em
@@ -143,15 +161,12 @@ mensagem de erro.
 
 ## Parte 4 — o que coletar para a implementação
 
-Três endpoints, e de cada um: a página da documentação **e** uma resposta real.
+Caminhos, parâmetros, paginação, formato de erro e envelope de resposta vieram
+todos do catálogo oficial (acima). **O que o catálogo não traz é o objeto tweet
+por dentro** — e é justamente ele que decide a tradução para
+`NormalizedEvent`. Isso só sai de uma resposta real.
 
-| # | Endpoint | Para quê |
-|---|---|---|
-| 1 | usuário por handle | `platform_user_id`, handle, nome, seguidores → tabela `actor` |
-| 2 | posts recentes de um usuário | a timeline, que é a coleta de baseline |
-| 3 | busca avançada por termo com janela de data | a coleta de campanha, que é o dossiê |
-
-O que eu preciso ver na resposta, e por que:
+O que eu preciso ver, e por que:
 
 - **como vêm retuíte, resposta, citação e menção.** É onde a tradução para
   `NormalizedEvent` se decide. O `x_parquet.py` levou três armadilhas neste
