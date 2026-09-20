@@ -95,6 +95,7 @@ cursor e recomputa a janela — pode chamar quantas vezes quiser.
 
 ```bash
 nabote seeds --file lista.txt   # resolve handles → DIDs e registra como tier A
+nabote seeds --file x.txt --source x   # o mesmo para o X (custa 1 req/handle)
 nabote seeds                    # lista as sementes registradas
 nabote status                   # schema, volume, custo acumulado
 nabote fetch --max-seconds 300  # só a coleta; usa as sementes do banco

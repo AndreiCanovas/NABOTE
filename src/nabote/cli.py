@@ -1126,24 +1126,45 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     try:
         if not args.file:
-            dids = identity.seed_dids(conn)
-            if not dids:
+            linhas = conn.execute(
+                "SELECT platform, handle, platform_user_id, tier FROM actor "
+                "WHERE tier IN ('A','B') ORDER BY platform, tier, handle, "
+                "platform_user_id").fetchall()
+            if not linhas:
                 print("nenhuma semente registrada. Use: nabote seeds --file lista.txt")
                 return 0
-            print(f"{len(dids)} sementes registradas\n")
-            for r in conn.execute(
-                "SELECT handle, platform_user_id, tier FROM actor "
-                "WHERE tier IN ('A','B') ORDER BY tier, handle, platform_user_id"):
-                print(f"  {r['tier']}  {(r['handle'] or '—'):<34} {r['platform_user_id']}")
+            print(f"{len(linhas)} sementes registradas\n")
+            for r in linhas:
+                print(f"  {r['platform']:<8} {r['tier']}  "
+                      f"{(r['handle'] or '—'):<34} {r['platform_user_id']}")
             return 0
 
         entries = identity.parse_seed_file(Path(args.file).read_text(encoding="utf-8"))
         if not entries:
             print(f"{args.file} não tem nenhuma entrada útil.", file=sys.stderr)
             return 1
-        print(f"resolvendo {len(entries)} entradas...\n")
 
-        ok, falhas = identity.register_seeds(conn, entries, tier=args.tier)
+        if args.source == "x":
+            carregar_env()
+            chave = os.environ.get("NABOTE_X_API_KEY", "").strip()
+            if not chave:
+                print("NABOTE_X_API_KEY não está no ambiente nem no .env.\n"
+                      "Veja docs/x-api-setup.md, parte 2.", file=sys.stderr)
+                return 1
+            # custa uma requisição por entrada, sob o mesmo 1 req/5 s da coleta
+            segundos = len(entries) * x_api.INTERVALO_PADRAO
+            quanto = f"{segundos:.0f}s" if segundos < 90 else f"{segundos / 60:.0f} min"
+            print(f"resolvendo {len(entries)} handles no twitterapi.io\n"
+                  f"custa uma requisição cada · ~{quanto} a "
+                  f"{x_api.INTERVALO_PADRAO:g}s por requisição\n")
+            transporte = x_api.Transporte(chave)
+            antes = transporte.saldo()
+            ok, falhas = identity.register_seeds_x(
+                conn, entries, transporte, tier=args.tier)
+        else:
+            print(f"resolvendo {len(entries)} entradas...\n")
+            antes = None
+            ok, falhas = identity.register_seeds(conn, entries, tier=args.tier)
         for nome, did in ok:
             print(f"  ok      {nome:<34} {did}")
         for nome, motivo in falhas:
@@ -1151,6 +1172,10 @@ def cmd_seeds(args: argparse.Namespace) -> int:
 
         print(f"\n{len(ok)} registradas como tier {args.tier}"
               + (f", {len(falhas)} falharam" if falhas else ""))
+        if antes is not None:
+            gasto = antes - transporte.saldo()
+            print(f"custo    US$ {gasto / x_api.CREDITOS_POR_USD:.5f} · "
+                  f"{gasto} créditos")
         if falhas and not ok:
             return 1
         print(f"total de sementes no banco: {len(identity.seed_dids(conn))}")
@@ -1705,6 +1730,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     seeds = sub.add_parser("seeds", help="registra ou lista a lista curada de perfis")
     seeds.add_argument("--file", help="arquivo com um handle ou DID por linha")
+    seeds.add_argument("--source", default="bluesky", choices=["bluesky", "x"],
+                       help="plataforma da lista (x resolve handle→id no provedor, "
+                            "e custa uma requisição por entrada)")
     seeds.add_argument("--tier", default="A", choices=["A", "B"])
 
     cycle = sub.add_parser("cycle", help="fetch + aggregate + analyze + dump")

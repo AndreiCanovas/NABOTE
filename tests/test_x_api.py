@@ -508,3 +508,121 @@ class TestSementesDoX(unittest.TestCase):
     def test_tier_b_entra_quando_pedido(self):
         self.assertEqual(self.identity.seed_handles(self.conn, "x", ("A", "B")),
                          ["mensal", "semente_a", "semente_b"])
+
+
+class TestRegistroDeSementes(unittest.TestCase):
+    """Cada entrada custa uma requisição — então o lote não pode ser tudo ou
+    nada, e o que já foi resolvido tem de ficar gravado."""
+
+    def setUp(self):
+        import tempfile
+        from nabote import db, identity
+        self.db, self.identity = db, identity
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "t.db")
+        db.migrate(self.conn, ROOT / "migrations")
+
+    def tearDown(self):
+        self.conn.close(); self._tmp.cleanup()
+
+    def _transporte(self, perfis, saldos=None):
+        rede = _Rede(saldos=saldos)
+        rede.perfis = perfis
+
+        def chamar(req, timeout=None):
+            url = req.full_url
+            rede.urls.append(url)
+            if "/oapi/my/info" in url:
+                return _Resposta({"recharge_credits": 0,
+                                  "total_bonus_credits": rede.saldos.pop(0)
+                                  if len(rede.saldos) > 1 else rede.saldos[0]})
+            nome = url.split("userName=")[1].split("&")[0]
+            corpo = perfis.get(nome)
+            if corpo is None:
+                return _Resposta({"status": "error", "msg": f"user not found: {nome}"})
+            return _Resposta({"status": "success", "data": corpo})
+
+        t = x_api.Transporte("k", intervalo=0, abrir=chamar)
+        t.rede = rede
+        return t
+
+    def _perfil(self, uid, nome, seguidores=100):
+        return {"id": uid, "userName": nome, "name": nome.upper(),
+                "description": f"bio de {nome}", "followers": seguidores,
+                "following": 10, "statusesCount": 900,
+                "createdAt": "2012-08-15T01:22:19.000000Z"}
+
+    def test_grava_o_id_e_nao_so_o_handle(self):
+        """Handle muda, id não. Resolver no registro é o que impede a mesma
+        conta virar dois atores depois de uma troca de nome."""
+        tr = self._transporte({"nikolas_dm": self._perfil("758264276", "nikolas_dm")})
+        ok, falhas = self.identity.register_seeds_x(self.conn, ["nikolas_dm"], tr)
+        self.assertEqual(ok, [("nikolas_dm", "758264276")])
+        self.assertEqual(falhas, [])
+
+        row = self.conn.execute(
+            "SELECT platform, platform_user_id, handle, tier, display_name, bio,"
+            " account_created_at FROM actor").fetchone()
+        self.assertEqual(row["platform"], "x")
+        self.assertEqual(row["platform_user_id"], "758264276")
+        self.assertEqual(row["tier"], "A")
+        self.assertEqual(row["bio"], "bio de nikolas_dm")
+        self.assertEqual(row["account_created_at"], "2012-08-15T01:22:19Z")
+
+    def test_uma_falha_nao_derruba_o_lote(self):
+        """Falhar no meio e perder o que já foi pago seria cobrar duas vezes
+        pela mesma resolução."""
+        tr = self._transporte({"boa": self._perfil("1", "boa"),
+                               "outra": self._perfil("2", "outra")})
+        ok, falhas = self.identity.register_seeds_x(
+            self.conn, ["boa", "nao_existe", "outra"], tr)
+        self.assertEqual([h for h, _ in ok], ["boa", "outra"])
+        self.assertEqual([h for h, _ in falhas], ["nao_existe"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) AS n FROM actor").fetchone()["n"], 2)
+
+    def test_arroba_no_comeco_e_tolerado(self):
+        tr = self._transporte({"fulano": self._perfil("9", "fulano")})
+        ok, _ = self.identity.register_seeds_x(self.conn, ["@fulano"], tr)
+        self.assertEqual(ok, [("fulano", "9")])
+
+    def test_rodar_de_novo_nao_duplica_nem_rebaixa(self):
+        """`upsert_actor` é idempotente, e é o que faz uma segunda rodada
+        pagar só pelo que faltou."""
+        perfis = {"a": self._perfil("1", "a")}
+        self.identity.register_seeds_x(self.conn, ["a"], self._transporte(perfis))
+        self.identity.register_seeds_x(self.conn, ["a"], self._transporte(perfis),
+                                       tier="B")
+        linhas = self.conn.execute("SELECT tier FROM actor").fetchall()
+        self.assertEqual(len(linhas), 1)
+        self.assertEqual(linhas[0]["tier"], "A")   # tier sobe, nunca desce
+
+    def test_snapshot_do_dia_atualiza_em_vez_de_duplicar(self):
+        self.identity.register_seeds_x(
+            self.conn, ["a"], self._transporte({"a": self._perfil("1", "a", 100)}))
+        self.identity.register_seeds_x(
+            self.conn, ["a"], self._transporte({"a": self._perfil("1", "a", 250)}))
+        linhas = self.conn.execute(
+            "SELECT followers_count FROM actor_snapshot").fetchall()
+        self.assertEqual([r["followers_count"] for r in linhas], [250])
+
+    def test_sem_credito_para_o_lote(self):
+        """Insistir sem crédito só gasta 5 segundos de espera por entrada."""
+        rede = _Rede()
+        def chamar(req, timeout=None):
+            rede.urls.append(req.full_url)
+            if "/oapi/my/info" in req.full_url:
+                return _Resposta({"recharge_credits": 0, "total_bonus_credits": 0})
+            return _Resposta({"status": "error", "msg": "insufficient credit balance"})
+        tr = x_api.Transporte("k", intervalo=0, abrir=chamar)
+        ok, falhas = self.identity.register_seeds_x(
+            self.conn, ["a", "b", "c", "d"], tr)
+        self.assertEqual(ok, [])
+        self.assertEqual(len(falhas), 1)   # parou na primeira, não tentou as outras
+
+    def test_a_semente_registrada_volta_em_seed_handles(self):
+        """O elo que fecha o ciclo: o que `seeds` grava é o que `fetch` lê."""
+        tr = self._transporte({"a": self._perfil("1", "a"),
+                               "b": self._perfil("2", "b")})
+        self.identity.register_seeds_x(self.conn, ["a", "b"], tr)
+        self.assertEqual(self.identity.seed_handles(self.conn, "x"), ["a", "b"])

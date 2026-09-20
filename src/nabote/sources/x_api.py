@@ -238,55 +238,22 @@ def erro_do_corpo(corpo: dict[str, Any]) -> str | None:
     return None
 
 
-class XApiSource:
-    """Coleta do X pelo twitterapi.io, em dois modos.
+class Transporte:
+    """HTTP com chave, limite de taxa e erro do provedor já traduzido.
 
-    `contas=[...]`  baseline: a timeline de cada perfil, paginada, com um
-                    cursor por conta — é o que a migração 006 passou a guardar.
-    `query="..."`   campanha: busca por termo, cursor único.
-
-    O teto de gasto é aplicado ANTES da requisição, não depois: o saldo é lido
-    no provedor na abertura e a cada página, e a coleta para quando o gasto
-    alcança o limite. O que ficou de fora vai para `frame`, porque número de
-    cobertura desconhecida não é número medido.
+    Separado de `XApiSource` porque a coleta não é o único uso pago da API: o
+    registro de sementes resolve handle → id pelo mesmo provedor, com a mesma
+    chave e sob o mesmo 1 req/5 s. Reimplementar isso lá seria duplicar
+    exatamente a parte que erra caro — a espera que evita o 429, e o erro que
+    vem com HTTP 200.
     """
 
-    name = "twitterapi_io"
-
-    def __init__(self, api_key: str, *, contas: list[str] | None = None,
-                 query: str | None = None, cursores: dict[str, str] | None = None,
-                 paginas_por_conta: int = 1, teto_usd: float | None = None,
-                 conferir_saldo_a_cada: int = 10,
-                 intervalo: float = INTERVALO_PADRAO, incluir_respostas: bool = True,
+    def __init__(self, api_key: str, *, intervalo: float = INTERVALO_PADRAO,
                  abrir: Any = None):
-        if bool(contas) == bool(query):
-            raise ValueError("passe contas OU query, nunca os dois nem nenhum")
         self.api_key = api_key
-        self.contas = list(contas or [])
-        self.query = query
-        self.cursores = dict(cursores or {})
-        self.paginas_por_conta = paginas_por_conta
-        self.teto_usd = teto_usd
-        self.conferir_saldo_a_cada = max(1, conferir_saldo_a_cada)
         self.intervalo = intervalo
-        self.incluir_respostas = incluir_respostas
         self._abrir = abrir or urllib.request.urlopen
         self._ultima = 0.0
-        self._desde_a_conferencia = 0
-        self.skipped = 0
-        self.saldo_inicial: int | None = None
-        self.saldo_atual: int | None = None
-        self.frame: dict[str, Any] = {
-            "kind": "accounts" if contas else "search",
-            "planned": len(self.contas) if contas else 1,
-            "reached": 0,
-            "left_out": [],
-            "pages": 0,
-            "budget_usd": teto_usd,
-            "stopped_by": None,
-        }
-
-    # ---------- rede ----------
 
     def _esperar(self) -> None:
         falta = self.intervalo - (time.monotonic() - self._ultima)
@@ -294,7 +261,7 @@ class XApiSource:
             time.sleep(falta)
         self._ultima = time.monotonic()
 
-    def _get(self, caminho: str, **params: Any) -> dict[str, Any]:
+    def get(self, caminho: str, **params: Any) -> dict[str, Any]:
         self._esperar()
         url = f"{BASE}{caminho}"
         if params:
@@ -324,8 +291,77 @@ class XApiSource:
 
     def saldo(self) -> int:
         """Créditos disponíveis. É o que torna o custo medido e não estimado."""
-        c = self._get("/oapi/my/info")
+        c = self.get("/oapi/my/info")
         return int(c.get("recharge_credits", 0)) + int(c.get("total_bonus_credits", 0))
+
+
+def perfil(transporte: Transporte, handle: str) -> dict[str, Any]:
+    """Os campos de `actor` a partir de `/twitter/user/info`.
+
+    É por aqui que uma semente de X nasce: o handle é o que a pessoa digita, e
+    o `id` é o que o banco guarda. Handle muda, id não — resolver na hora do
+    registro é o que impede a mesma conta virar dois atores depois de uma troca
+    de nome.
+    """
+    d = transporte.get("/twitter/user/info", userName=handle).get("data") or {}
+    if not d.get("id"):
+        raise ErroDoProvedor(f"perfil sem id para {handle}")
+    return {
+        "uid": str(d["id"]),
+        "handle": d.get("userName") or handle,
+        "display_name": d.get("name"),
+        "bio": bio_do_autor(d),
+        "account_created_at": parse_data(d.get("createdAt")),
+        "followers_count": d.get("followers"),
+        "following_count": d.get("following"),
+        "posts_count": d.get("statusesCount"),
+    }
+
+
+class XApiSource(Transporte):
+    """Coleta do X pelo twitterapi.io, em dois modos.
+
+    `contas=[...]`  baseline: a timeline de cada perfil, paginada, com um
+                    cursor por conta — é o que a migração 006 passou a guardar.
+    `query="..."`   campanha: busca por termo, cursor único.
+
+    O teto de gasto é aplicado ANTES da requisição, não depois: o saldo é lido
+    no provedor na abertura e a cada página, e a coleta para quando o gasto
+    alcança o limite. O que ficou de fora vai para `frame`, porque número de
+    cobertura desconhecida não é número medido.
+    """
+
+    name = "twitterapi_io"
+
+    def __init__(self, api_key: str, *, contas: list[str] | None = None,
+                 query: str | None = None, cursores: dict[str, str] | None = None,
+                 paginas_por_conta: int = 1, teto_usd: float | None = None,
+                 conferir_saldo_a_cada: int = 10,
+                 intervalo: float = INTERVALO_PADRAO, incluir_respostas: bool = True,
+                 abrir: Any = None):
+        if bool(contas) == bool(query):
+            raise ValueError("passe contas OU query, nunca os dois nem nenhum")
+        super().__init__(api_key, intervalo=intervalo, abrir=abrir)
+        self.contas = list(contas or [])
+        self.query = query
+        self.cursores = dict(cursores or {})
+        self.paginas_por_conta = paginas_por_conta
+        self.teto_usd = teto_usd
+        self.conferir_saldo_a_cada = max(1, conferir_saldo_a_cada)
+        self.incluir_respostas = incluir_respostas
+        self._desde_a_conferencia = 0
+        self.skipped = 0
+        self.saldo_inicial: int | None = None
+        self.saldo_atual: int | None = None
+        self.frame: dict[str, Any] = {
+            "kind": "accounts" if contas else "search",
+            "planned": len(self.contas) if contas else 1,
+            "reached": 0,
+            "left_out": [],
+            "pages": 0,
+            "budget_usd": teto_usd,
+            "stopped_by": None,
+        }
 
     # ---------- custo ----------
 
@@ -388,7 +424,7 @@ class XApiSource:
             if self._estourou():
                 self.frame["stopped_by"] = "budget"
                 return
-            corpo = self._get("/twitter/tweet/advanced_search",
+            corpo = self.get("/twitter/tweet/advanced_search",
                               query=self.query, queryType="Latest", cursor=pagina)
             self.frame["pages"] += 1
             proxima = proxima_pagina(corpo)
@@ -419,7 +455,7 @@ class XApiSource:
             if self._estourou():
                 self.frame["stopped_by"] = "budget"
                 return
-            corpo = self._get("/twitter/user/last_tweets", userName=conta,
+            corpo = self.get("/twitter/user/last_tweets", userName=conta,
                               cursor=pagina,
                               includeReplies=str(self.incluir_respostas).lower())
             self.frame["pages"] += 1

@@ -128,6 +128,62 @@ def seed_dids(conn: sqlite3.Connection, tiers: tuple[str, ...] = ("A", "B")) -> 
     return [r["platform_user_id"] for r in rows]
 
 
+def register_seeds_x(
+    conn: sqlite3.Connection,
+    entries: Iterable[str],
+    transporte,
+    tier: str = "A",
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Registra sementes de X, resolvendo handle → id pelo provedor.
+
+    Cada entrada custa uma requisição. Por isso uma falha NÃO derruba o lote:
+    o que já foi resolvido fica gravado, e rodar de novo só paga pelo que
+    faltou — `upsert_actor` é idempotente.
+
+    O que se guarda é o `id`, não o handle. Handle muda; resolver no registro
+    é o que impede a mesma conta virar dois atores depois de uma troca de nome.
+    Se ela trocar, o `fetch` daquele perfil volta vazio e isso aparece na
+    contagem — visível, em vez de um ator duplicado em silêncio.
+    """
+    from .ingest import upsert_actor
+    from .sources.x_api import ErroDoProvedor, PLATFORM as PLAT_X, perfil
+
+    ok: list[tuple[str, str]] = []
+    falhas: list[tuple[str, str]] = []
+
+    for bruto in entries:
+        handle = bruto.lstrip("@").strip()
+        if not handle:
+            continue
+        try:
+            d = perfil(transporte, handle)
+        except ErroDoProvedor as exc:
+            falhas.append((bruto, str(exc)))
+            if exc.sem_credito:
+                break          # insistir sem crédito só gasta tempo de espera
+            continue
+
+        actor_id = upsert_actor(conn, PLAT_X, d["uid"], tier, d["handle"])
+        conn.execute(
+            "UPDATE actor SET display_name = ?, bio = ?, account_created_at = ?, "
+            "last_seen_at = ? WHERE actor_id = ?",
+            (d["display_name"], d["bio"], d["account_created_at"],
+             utcnow(), actor_id))
+        # o snapshot é por dia: reregistrar no mesmo dia atualiza, não duplica
+        conn.execute(
+            "INSERT INTO actor_snapshot (actor_id, snapshot_date, followers_count, "
+            "following_count, posts_count) VALUES (?,?,?,?,?) "
+            "ON CONFLICT (actor_id, snapshot_date) DO UPDATE SET "
+            "followers_count = excluded.followers_count, "
+            "following_count = excluded.following_count, "
+            "posts_count = excluded.posts_count",
+            (actor_id, utcnow()[:10], d["followers_count"],
+             d["following_count"], d["posts_count"]))
+        ok.append((d["handle"], d["uid"]))
+
+    return ok, falhas
+
+
 def seed_handles(conn: sqlite3.Connection, platform: str,
                  tiers: tuple[str, ...] = ("A",)) -> list[str]:
     """Handles das sementes de uma plataforma — o que a API do X pede.

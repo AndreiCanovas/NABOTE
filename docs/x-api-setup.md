@@ -303,6 +303,38 @@ guarda ignorar uma chave de verdade colada ali por acidente.
 Em falso positivo sem marca, `git commit --no-verify` passa por cima — e vale
 avisar, para calibrar.
 
+## Registrando as sementes
+
+Antes de coletar, o banco precisa saber **quem** coletar. A lista é curada à
+mão — um handle por linha, `#` comenta:
+
+```
+# seeds/x_politica.txt
+nikolas_dm
+@ptbrasil        # a arroba é tolerada
+KimKataguiri
+```
+
+```bash
+nabote seeds --file seeds/x_politica.txt --source x
+```
+
+Cada handle custa **uma requisição**, para resolver handle → id. O comando
+avisa quanto vai levar antes de começar, e no fim diz quanto custou de fato.
+
+**Por que resolver o id agora, se a coleta usa o handle?** Porque handle muda
+e id não. O `platform_user_id` é a chave no banco: se a pessoa trocar de nome,
+o ator continua sendo o mesmo, e o que acontece é o `fetch` daquele perfil
+voltar vazio — visível na contagem, em vez de um ator duplicado em silêncio.
+
+Uma falha no meio **não derruba o lote**: o que já foi resolvido fica gravado,
+e rodar de novo só paga pelo que faltou. Sem crédito, o lote para na primeira
+— insistir só gastaria 5 segundos de espera por entrada.
+
+```bash
+nabote seeds            # lista o que está registrado, das duas plataformas
+```
+
 ## Rodando a coleta
 
 ```bash
