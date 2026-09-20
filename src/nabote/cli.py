@@ -1322,6 +1322,8 @@ def cmd_candidatos(args: argparse.Namespace) -> int:
               "peso 500; duzentos em cento e cinquenta contas são 150 arestas.\n"
               "\nfábrica  produz aresta — só a coleta traz, é o que se paga\n"
               "voz      chega de graça como Tier C, mas o texto dela não\n"
+              "ambos    as duas coisas\n"
+              "pouco    nem uma nem outra — volume concentrado em poucas contas\n"
               "\nO arquivo é de 2023: conferir antes de adotar.")
         return 0
     finally:
