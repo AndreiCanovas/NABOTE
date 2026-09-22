@@ -1199,3 +1199,78 @@ class TestStatusNaoMisturaFontes(unittest.TestCase):
         saida = self._status(platform="x")
         self.assertIn("x_parquet:2023.zip", saida)
         self.assertIn("twitterapi_io", saida)
+
+
+class TestDiagnosticoDaColeta(unittest.TestCase):
+    """Três números da primeira coleta real que estavam certos e enganavam.
+
+    71 respostas viraram 39 arestas — e "faltam 32" tem duas explicações
+    opostas: resposta ao próprio post (uma thread, que NÃO é interação com
+    outra pessoa e corretamente não vira aresta) ou alvo ausente no payload
+    (aresta real perdida). O total não distingue as duas.
+
+    O período saiu "2011-09-12 a 2026-09-22" numa coleta de timeline recente,
+    porque um tweet fixado antigo estica o mínimo. Verdadeiro e ilegível como
+    afirmação de cobertura.
+
+    E "← nada veio" é uma pergunta, não uma resposta. Se a conta tem 12.000
+    tweets, o problema é a chamada; se tem 3, o handle resolveu para um
+    homônimo morto. O número está em `actor_snapshot`, já pago no registro.
+    """
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli, db, ingest
+        from nabote.events import NormalizedEvent, Target
+        self.cli = cli
+        self._tmp = tempfile.TemporaryDirectory()
+        self.caminho = Path(self._tmp.name) / "s.db"
+        conn = db.connect(self.caminho)
+        db.migrate(conn, ROOT / "migrations")
+        ingest.upsert_actor(conn, "x", "1", "A", "quem_posta")
+        muda = ingest.upsert_actor(conn, "x", "7", "A", "conta_muda")
+        conn.execute("INSERT INTO actor_snapshot (actor_id, snapshot_date, "
+                     "followers_count, following_count, posts_count) "
+                     "VALUES (?,?,?,?,?)", (muda, "2026-09-20", 42, 10, 3))
+        run = ingest.start_run(conn, "twitterapi_io")
+
+        def ev(uid, tipo, quando, alvos):
+            ingest.handle_event(conn, run, NormalizedEvent(
+                platform="x", kind="post", actor_uid="1", actor_handle="quem_posta",
+                occurred_at=quando, post_uid=uid, post_type=tipo, targets=alvos),
+                ingest.Stats())
+
+        ev("p1", "reply", "2026-09-21T10:00:00Z",
+           [Target(kind="reply", uid="2", handle="outra_pessoa")])   # vira aresta
+        ev("p2", "reply", "2026-09-21T10:00:00Z",
+           [Target(kind="reply", uid="1", handle="quem_posta")])     # thread
+        ev("p3", "reply", "2026-09-21T10:00:00Z", [])                # alvo ausente
+        ev("p4", "original", "2011-09-12T10:00:00Z", [])             # fixado antigo
+        conn.commit(); conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _status(self):
+        import argparse, contextlib, io as _io
+        saida = _io.StringIO()
+        with contextlib.redirect_stdout(saida):
+            self.cli.cmd_status(argparse.Namespace(
+                db=self.caminho, source="x", platform=None))
+        return saida.getvalue()
+
+    def test_separa_thread_de_alvo_ausente(self):
+        saida = self._status()
+        self.assertIn("thread", saida.lower())
+        self.assertIn("sem alvo", saida.lower())
+
+    def test_o_periodo_mostra_onde_a_massa_esta(self):
+        """Mínimo e máximo sozinhos deixam um fixado de 2011 parecer cobertura."""
+        saida = self._status()
+        self.assertIn("2011-09-12", saida)
+        self.assertRegex(saida, r"1 post.{0,40}fora dos últimos 30 dias")
+
+    def test_a_semente_vazia_vem_com_o_diagnostico(self):
+        saida = self._status()
+        linha, = [l for l in saida.splitlines() if "conta_muda" in l]
+        self.assertIn("3 tweets", linha)

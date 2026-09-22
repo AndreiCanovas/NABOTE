@@ -178,7 +178,16 @@ def _status_recortado(conn, *, source: str | None, platform: str | None) -> None
         return f"{n:,}".replace(",", ".")
 
     def q(sql, *extra):
-        return conn.execute(sql, (*extra, *args)).fetchall()
+        """Roda a consulta com os parâmetros do corte JÁ na frente.
+
+        A ordem não é escolha de estilo: o SQLite liga `?` por POSIÇÃO no
+        texto, e `{onde}` aparece antes de qualquer `?` extra em todas as
+        consultas daqui. Com os extras na frente — como esta função fazia — a
+        troca não levanta erro nenhum: a consulta roda, compara as coisas
+        erradas e devolve vazio ou zero, que é a forma mais cara de errar,
+        porque parece um resultado.
+        """
+        return conn.execute(sql, (*args, *extra)).fetchall()
 
     ROTULO = {"A": "sementes, coletadas toda semana",
               "B": "coletadas todo mês",
@@ -215,6 +224,36 @@ def _status_recortado(conn, *, source: str | None, platform: str | None) -> None
           f"WHERE {onde}")[0]
     if r["a"]:
         print(f"  período    {r['a'][:10]} a {r['b'][:10]}")
+        # Mínimo e máximo sozinhos enganam: um tweet fixado de 2011 numa coleta
+        # de timeline recente estica o período para quinze anos, e a linha passa
+        # a descrever uma cobertura que não existe.
+        antigos = q(f"SELECT COUNT(*) n FROM post p WHERE {onde} "
+                    f"AND p.created_at < datetime(?, '-30 days')", r["b"])[0]["n"]
+        if antigos:
+            print(f"             {milhar(antigos)} post(s) fora dos últimos 30 dias "
+                  f"— tweet fixado estica o mínimo, não é cobertura")
+
+    # 71 respostas viraram 39 arestas na primeira coleta real, e "faltam 32"
+    # tem duas explicações opostas. Separar as duas é a diferença entre um
+    # comportamento correto e uma aresta perdida em silêncio.
+    mudos = q(f"""SELECT p.post_type,
+                         SUM(p.parent_actor_id = p.actor_id) thread,
+                         SUM(p.parent_actor_id IS NULL)      sem_alvo
+                  FROM post p
+                  WHERE {onde} AND p.post_type <> 'original'
+                    AND p.post_id NOT IN (SELECT post_id FROM interaction)
+                  GROUP BY p.post_type ORDER BY p.post_type""")
+    if mudos:
+        print(f"\n=== posts que não viraram aresta ===")
+        for r in mudos:
+            partes = []
+            if r["thread"]:
+                partes.append(f"{milhar(r['thread'])} thread (resposta a si "
+                              f"mesmo — não é interação)")
+            if r["sem_alvo"]:
+                partes.append(f"{milhar(r['sem_alvo'])} sem alvo no payload "
+                              f"— ARESTA PERDIDA")
+            print(f"  {r['post_type']:<10} {' · '.join(partes)}")
 
     print(f"\n=== arestas ===")
     for r in q(f"SELECT i.kind, COUNT(*) n FROM interaction i "
@@ -237,7 +276,22 @@ def _status_recortado(conn, *, source: str | None, platform: str | None) -> None
                    WHERE a.tier = 'A' AND a.platform = ?
                    GROUP BY a.actor_id ORDER BY posts DESC, a.handle""",
                           (*args, rede)).fetchall():
-        nada = "   ← nada veio" if not r["posts"] else ""
+        nada = ""
+        if not r["posts"]:
+            # "nada veio" é pergunta, não resposta. O perfil já foi pago no
+            # registro: 12.000 tweets aponta para a chamada, 3 aponta para o
+            # handle ter resolvido num homônimo morto.
+            s = conn.execute(
+                "SELECT s.posts_count, s.followers_count FROM actor_snapshot s "
+                "JOIN actor a ON a.actor_id = s.actor_id "
+                "WHERE a.handle = ? AND a.platform = ? "
+                "ORDER BY s.snapshot_date DESC LIMIT 1", (r["handle"], rede)
+            ).fetchone()
+            if s and s["posts_count"] is not None:
+                nada = (f"   ← nada veio · perfil diz {milhar(s['posts_count'])}"
+                        f" tweets, {milhar(s['followers_count'] or 0)} seguidores")
+            else:
+                nada = "   ← nada veio · sem perfil guardado"
         print(f"  {(r['handle'] or '—'):<22} {r['posts']:>5} posts  "
               f"{r['arestas']:>5} arestas{nada}")
 
