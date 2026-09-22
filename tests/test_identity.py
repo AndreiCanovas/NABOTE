@@ -360,3 +360,47 @@ class TestCorrigirSemente(unittest.TestCase):
 
     def test_rebaixar_quem_nao_e_semente_nao_quebra(self):
         self.assertEqual(identity.remover_sementes(self.conn, "x", ["ninguem"]), [])
+
+
+class TestCoberturaDaBusca(unittest.TestCase):
+    """`quem` responde com o arquivo histórico, e o arquivo tem recorte.
+
+    `pablomarcal` apareceu com 3 arestas recebidas — não porque o handle esteja
+    errado, mas porque o arquivo cobre abril a junho de 2023 e Pablo Marçal
+    ficou nacionalmente conhecido na eleição de 2024. Conta ausente do recorte
+    parece pequena, e "parece pequena" foi exatamente o sinal que mandei o
+    usuário usar para julgar handle errado.
+
+    Uma ferramenta que devolve um ranking sem dizer sobre QUE PERÍODO ele fala
+    convida à leitura errada. O período está no banco.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "c.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        from nabote import ingest
+        from nabote.events import NormalizedEvent
+        run = ingest.start_run(self.conn, "x_parquet:2023.zip")
+        for i, quando in enumerate(("2023-04-19T10:00:00Z", "2023-06-25T10:00:00Z")):
+            ingest.handle_event(self.conn, run, NormalizedEvent(
+                platform="x", kind="post", actor_uid=f"a{i}", actor_handle=f"alguem{i}",
+                occurred_at=quando, post_uid=f"p{i}", post_type="original"),
+                ingest.Stats())
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_devolve_o_periodo_que_o_ranking_cobre(self):
+        cob = identity.cobertura_do_arquivo(self.conn, "x")
+        self.assertEqual(cob["de"], "2023-04-19")
+        self.assertEqual(cob["ate"], "2023-06-25")
+        self.assertEqual(cob["posts"], 2)
+
+    def test_banco_sem_historico_nao_finge_cobertura(self):
+        outro = db.connect(Path(self._tmp.name) / "vazio.db")
+        db.migrate(outro, ROOT / "migrations")
+        self.assertIsNone(identity.cobertura_do_arquivo(outro, "x"))
+        outro.close()

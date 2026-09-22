@@ -498,3 +498,29 @@ def remover_sementes(conn: sqlite3.Connection, platform: str,
         rebaixados.append((linha["handle"] or linha["platform_user_id"],
                            linha["platform_user_id"]))
     return rebaixados
+
+
+def cobertura_do_arquivo(conn: sqlite3.Connection, platform: str) -> dict | None:
+    """O recorte sobre o qual `procurar_ator` fala. None se não há arquivo.
+
+    Existe porque o ranking sem esta informação convida à leitura errada.
+    `pablomarcal` apareceu com 3 arestas recebidas — não por handle errado, mas
+    porque o arquivo cobre abril a junho de 2023 e ele ficou conhecido na
+    eleição de 2024. "Parece pequena" era justamente o sinal que a ferramenta
+    mandava usar para julgar handle errado, e ausência do recorte produz esse
+    sinal sem que nada esteja errado.
+
+    Só a coleta histórica conta, não a coleta corrente: um ranking construído
+    sobre as últimas 20 postagens de 31 contas não tem massa para separar
+    conta real de homônima, que é a única coisa que esta busca serve para
+    fazer.
+    """
+    r = conn.execute(
+        """SELECT MIN(p.created_at) de, MAX(p.created_at) ate, COUNT(*) posts
+             FROM post p
+             JOIN collection_run r ON r.run_id = p.run_id
+            WHERE p.platform = ? AND r.source LIKE 'x_parquet:%'""",
+        (platform,)).fetchone()
+    if not r or not r["de"]:
+        return None
+    return {"de": r["de"][:10], "ate": r["ate"][:10], "posts": r["posts"]}

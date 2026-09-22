@@ -334,6 +334,18 @@ def cmd_quem(args: argparse.Namespace) -> int:
         print("\n  'recebidas' é o que separa a conta real da homônima: figura\n"
               "  pública é destino de amplificação. Quem só ENVIA muito costuma\n"
               "  ser fábrica de retuíte, que não é a conta que você procura.")
+        cob = identity.cobertura_do_arquivo(conn, args.platform)
+        if cob:
+            print(f"\n  Mas o ranking fala SÓ do arquivo histórico: "
+                  f"{cob['de']} a {cob['ate']},\n"
+                  f"  {cob['posts']:,}".replace(",", ".") + " posts, e só dos assuntos que ele recortou.\n"
+                  "  Conta que ficou conhecida depois, ou que não entrou nesses\n"
+                  "  assuntos, aparece pequena sem ter nada de errado. Número\n"
+                  "  baixo aqui é 'o arquivo não sabe', não 'a conta é falsa'.")
+        else:
+            print("\n  ATENÇÃO: não há arquivo histórico neste banco. Sem ele o\n"
+                  "  ranking não tem massa para separar conta real de homônima —\n"
+                  "  ele está contando as últimas postagens de 31 contas.")
         return 0
     finally:
         conn.close()
