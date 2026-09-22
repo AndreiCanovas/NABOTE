@@ -1345,10 +1345,11 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     try:
         if not args.file and not args.remover:
+            plat = x_api.PLATFORM if args.source == "x" else atproto.PLATFORM
             linhas = conn.execute(
                 "SELECT platform, handle, platform_user_id, tier FROM actor "
-                "WHERE tier IN ('A','B') ORDER BY platform, tier, handle, "
-                "platform_user_id").fetchall()
+                "WHERE tier IN ('A','B') AND platform = ? "
+                "ORDER BY tier, handle, platform_user_id", (plat,)).fetchall()
             if not linhas:
                 print("nenhuma semente registrada. Use: nabote seeds --file lista.txt")
                 return 0
@@ -1377,6 +1378,29 @@ def cmd_seeds(args: argparse.Namespace) -> int:
             return 1
 
         if args.source == "x":
+            # Entrada `id:` não resolve nada: o ator já está no banco, e o
+            # registro só promove o tier. Um lote inteiro assim não toca a
+            # rede, então exigir chave ali recusaria justamente o caminho
+            # gratuito — o que existe para consertar curadoria sem pagar.
+            if all(e.startswith("id:") for e in entries):
+                print(f"promovendo {len(entries)} ator(es) já conhecido(s) "
+                      f"do banco — sem rede, sem custo\n")
+                antes = None
+                transporte = None
+                ok, falhas = identity.register_seeds_x(
+                    conn, entries, None, tier=args.tier)
+                conn.commit()
+                for nome, uid in ok:
+                    print(f"  ok      {nome:<34} {uid}")
+                for nome, motivo in falhas:
+                    print(f"  FALHOU  {nome:<34} {motivo}", file=sys.stderr)
+                print(f"\n{len(ok)} promovida(s) a tier {args.tier}"
+                      + (f", {len(falhas)} falharam" if falhas else ""))
+                plat = x_api.PLATFORM
+                print(f"total de sementes de {plat} no banco: "
+                      f"{len(identity.seed_uids(conn, plat))}")
+                return 1 if falhas and not ok else 0
+
             carregar_env()
             chave = os.environ.get("NABOTE_X_API_KEY", "").strip()
             if not chave:

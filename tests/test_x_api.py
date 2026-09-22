@@ -1278,3 +1278,63 @@ class TestDiagnosticoDaColeta(unittest.TestCase):
         saida = self._status()
         linha, = [l for l in saida.splitlines() if "conta_muda" in l]
         self.assertIn("3 tweets", linha)
+
+
+class TestRegistroSemRede(unittest.TestCase):
+    """Uma lista só de `id:` não toca a rede — e mesmo assim era recusada por
+    falta de chave, antes de fazer nada.
+
+    A conferência de chave e a leitura de saldo são incondicionais para
+    `--source x`, o que é certo quando há handle para resolver. Com `id:` não
+    há nada a resolver: o ator já está no banco. Exigir chave ali transforma o
+    caminho gratuito — justamente o que existe para consertar um erro de
+    curadoria sem pagar — em erro.
+
+    Pior no estado em que isso foi descoberto: crédito negativo. O caminho que
+    funcionaria é o único que era recusado.
+    """
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli, db, ingest
+        self.cli = cli
+        self._tmp = tempfile.TemporaryDirectory()
+        self.raiz = Path(self._tmp.name)
+        conn = db.connect(self.raiz / "s.db")
+        db.migrate(conn, ROOT / "migrations")
+        ingest.upsert_actor(conn, "x", "738143559920934912", "C", "ErikakHilton")
+        ingest.upsert_actor(conn, "bluesky", "did:plc:z", "A", "outra.bsky.social")
+        conn.commit(); conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _rodar(self, *extra):
+        import contextlib, io as _io, os
+        os.environ.pop("NABOTE_X_API_KEY", None)       # sem chave, de propósito
+        saida = _io.StringIO()
+        args = self.cli.build_parser().parse_args(
+            ["--db", str(self.raiz / "s.db"), "seeds", "--source", "x", *extra])
+        with contextlib.redirect_stdout(saida):
+            codigo = self.cli.cmd_seeds(args)
+        return codigo, saida.getvalue()
+
+    def test_lista_so_de_id_registra_sem_chave(self):
+        lista = self.raiz / "certas.txt"
+        lista.write_text("id:738143559920934912\n", encoding="utf-8")
+        codigo, saida = self._rodar("--file", str(lista))
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("ErikakHilton", saida)
+
+    def test_lista_com_handle_continua_exigindo_chave(self):
+        """A exigência é certa quando há o que resolver — tirar a conferência
+        inteira trocaria um erro claro por um erro de rede confuso."""
+        lista = self.raiz / "mista.txt"
+        lista.write_text("id:738143559920934912\nalgum_handle\n", encoding="utf-8")
+        codigo, _ = self._rodar("--file", str(lista))
+        self.assertEqual(codigo, 1)
+
+    def test_a_listagem_respeita_a_fonte_pedida(self):
+        """Quem digita `--source x` está perguntando das sementes de X."""
+        codigo, saida = self._rodar()
+        self.assertNotIn("outra.bsky.social", saida)
