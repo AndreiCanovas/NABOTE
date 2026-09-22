@@ -1344,7 +1344,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     """Registra a lista curada. Aceita handle ou DID — você não precisa caçar DIDs."""
     conn = db.connect(args.db)
     try:
-        if not args.file:
+        if not args.file and not args.remover:
             linhas = conn.execute(
                 "SELECT platform, handle, platform_user_id, tier FROM actor "
                 "WHERE tier IN ('A','B') ORDER BY platform, tier, handle, "
@@ -1356,6 +1356,19 @@ def cmd_seeds(args: argparse.Namespace) -> int:
             for r in linhas:
                 print(f"  {r['platform']:<8} {r['tier']}  "
                       f"{(r['handle'] or '—'):<34} {r['platform_user_id']}")
+            return 0
+
+        if args.remover:
+            plat = x_api.PLATFORM if args.source == "x" else atproto.PLATFORM
+            alvos = identity.parse_seed_file(Path(args.file).read_text("utf-8")) \
+                if Path(args.remover).exists() else args.remover.split(",")
+            fora = identity.remover_sementes(conn, plat, alvos)
+            conn.commit()
+            for nome, uid in fora:
+                print(f"  rebaixada  {nome:<26} {uid}")
+            print(f"\n{len(fora)} rebaixada(s) para tier C — param de ser "
+                  f"coletadas.\nO que elas já produziram continua no banco: "
+                  f"rebaixar é parar de coletar,\nnão apagar o passado.")
             return 0
 
         entries = identity.parse_seed_file(Path(args.file).read_text(encoding="utf-8"))
@@ -2016,6 +2029,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="plataforma da lista (x resolve handle→id no provedor, "
                             "e custa uma requisição por entrada)")
     seeds.add_argument("--tier", default="A", choices=["A", "B"])
+    seeds.add_argument("--remover", metavar="HANDLES",
+                       help="rebaixa sementes para tier C: handles separados "
+                            "por vírgula, `id:<n>`, ou um arquivo. Param de ser "
+                            "coletadas; o que já produziram fica no banco")
 
     cycle = sub.add_parser("cycle", help="fetch + aggregate + analyze + dump")
     cycle.add_argument("--host", default=JetstreamDefaults.host)

@@ -921,9 +921,13 @@ class TestTotalDeSementes(unittest.TestCase):
         os.environ["NABOTE_X_API_KEY"] = "chave_falsa_de_teste"
         x_api.Transporte = lambda k, **kw: real(k, intervalo=0, abrir=abrir,
                                                 dormir=lambda s: None)
-        args = argparse.Namespace(db=self.raiz / "s.db",
-                                  file=str(self.raiz / "lista.txt"),
-                                  source="x", tier="A")
+        # Pelo parser de verdade, e não por um Namespace à mão: Namespace
+        # montado no teste não acompanha flag nova, e um argumento que existe
+        # só na cabeça de quem escreveu o teste é o mesmo defeito que fez
+        # `candidatos` chegar ao usuário como KeyError.
+        args = self.cli.build_parser().parse_args(
+            ["--db", str(self.raiz / "s.db"), "seeds",
+             "--file", str(self.raiz / "lista.txt"), "--source", "x"])
         saida = _io.StringIO()
         try:
             with contextlib.redirect_stdout(saida):

@@ -55,13 +55,25 @@ class TestSeedFile(unittest.TestCase):
 
     def test_a_lista_de_x_versionada_sai_limpa(self):
         """O teste acima prova a regra; este prova o arquivo que de fato vai ao
-        provedor. Handle de X é só letra, número e sublinhado: qualquer outro
-        caractere sobrando é anotação que vazou da curadoria para a chamada."""
+        provedor. Duas formas válidas, e nada além: handle de X, que é só letra,
+        número e sublinhado; ou `id:<n>`, para a conta cujo handle óbvio está
+        ocupado por homônimo. Qualquer outro caractere sobrando é anotação que
+        vazou da curadoria para a chamada."""
         texto = (ROOT / "seeds" / "politica_br_x.txt").read_text(encoding="utf-8")
         entradas = identity.parse_seed_file(texto)
         self.assertTrue(entradas)
         for e in entradas:
-            self.assertRegex(e, r"^[A-Za-z0-9_]{1,15}$", f"entrada suja: {e!r}")
+            self.assertRegex(e, r"^(id:[0-9]+|[A-Za-z0-9_]{1,15})$",
+                             f"entrada suja: {e!r}")
+
+    def test_a_lista_nao_repete_a_mesma_conta(self):
+        """Corrigir um handle para `id:` deixa a entrada antiga no arquivo com
+        facilidade, e a conta viraria duas linhas — uma paga requisição à toa,
+        e as duas disputam o mesmo ator."""
+        texto = (ROOT / "seeds" / "politica_br_x.txt").read_text(encoding="utf-8")
+        entradas = [e.lower() for e in identity.parse_seed_file(texto)]
+        repetidas = {e for e in entradas if entradas.count(e) > 1}
+        self.assertEqual(repetidas, set())
 
 
 class TestRegisterSeeds(unittest.TestCase):
@@ -276,3 +288,75 @@ class TestProcurarAtor(unittest.TestCase):
 
     def test_busca_vazia_devolve_lista_vazia(self):
         self.assertEqual(identity.procurar_ator(self.conn, "x", "zzzznaoexiste"), [])
+
+
+class TestCorrigirSemente(unittest.TestCase):
+    """Uma semente pode estar errada, e descobrir isso não tinha consequência.
+
+    Registrar promove tier C → A e `upsert_actor` NUNCA rebaixa, de propósito:
+    tier é decisão de curadoria e não pode oscilar com a ordem de chegada dos
+    eventos. Só que isso deixava a curadoria sem a outra metade — quatro contas
+    homônimas ficariam tier A para sempre, coletadas toda semana, gastando
+    página de API numa conta de 1 tweet.
+
+    E o conserto não deveria custar requisição: o id da conta certa já está no
+    arquivo de 2023, então promover por id é trabalho de banco, não de rede.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "c.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        from nabote import ingest
+        ingest.upsert_actor(self.conn, "x", "372649342", "A", "ErikaHilton")
+        ingest.upsert_actor(self.conn, "x", "738143559920934912", "C", "ErikakHilton")
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _tier(self, uid):
+        r = self.conn.execute("SELECT tier FROM actor WHERE platform_user_id = ?",
+                              (uid,)).fetchone()
+        return r["tier"] if r else None
+
+    def test_promove_por_id_sem_tocar_a_rede(self):
+        """`transporte=None` é o teste: se tentasse resolver, levantaria."""
+        ok, falhas = identity.register_seeds_x(
+            self.conn, ["id:738143559920934912"], transporte=None)
+        self.assertEqual(falhas, [])
+        self.assertEqual(self._tier("738143559920934912"), "A")
+
+    def test_promover_id_desconhecido_falha_sem_inventar_ator(self):
+        """Promover pressupõe que o ator existe. Criar um ator vazio a partir
+        de um id digitado errado seria pior que recusar."""
+        ok, falhas = identity.register_seeds_x(
+            self.conn, ["id:000000000"], transporte=None)
+        self.assertEqual(ok, [])
+        self.assertEqual(len(falhas), 1)
+        self.assertIsNone(self._tier("000000000"))
+
+    def test_rebaixar_tira_da_coleta(self):
+        identity.remover_sementes(self.conn, "x", ["ErikaHilton"])
+        self.assertEqual(self._tier("372649342"), "C")
+
+    def test_rebaixar_aceita_id(self):
+        identity.remover_sementes(self.conn, "x", ["id:372649342"])
+        self.assertEqual(self._tier("372649342"), "C")
+
+    def test_rebaixar_preserva_o_que_a_conta_ja_produziu(self):
+        """Rebaixar é 'pare de coletar', não 'apague o que veio'. O post e a
+        aresta de uma semana em que ela FOI coletada continuam sendo fato."""
+        from nabote import ingest
+        from nabote.events import NormalizedEvent
+        run = ingest.start_run(self.conn, "twitterapi_io")
+        ingest.handle_event(self.conn, run, NormalizedEvent(
+            platform="x", kind="post", actor_uid="372649342",
+            actor_handle="ErikaHilton", occurred_at="2026-09-21T10:00:00Z",
+            post_uid="p1", post_type="original"), ingest.Stats())
+        identity.remover_sementes(self.conn, "x", ["ErikaHilton"])
+        n = self.conn.execute("SELECT COUNT(*) n FROM post").fetchone()["n"]
+        self.assertEqual(n, 1)
+
+    def test_rebaixar_quem_nao_e_semente_nao_quebra(self):
+        self.assertEqual(identity.remover_sementes(self.conn, "x", ["ninguem"]), [])

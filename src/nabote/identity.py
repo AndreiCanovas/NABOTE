@@ -168,6 +168,24 @@ def register_seeds_x(
     falhas: list[tuple[str, str]] = []
 
     for bruto in entries:
+        # `id:<n>` promove um ator que o banco JÁ conhece, sem tocar a rede.
+        # O id da conta certa costuma vir do arquivo histórico, e pagar uma
+        # requisição para perguntar ao provedor algo que já está no disco
+        # seria gastar à toa — ainda mais para corrigir um erro nosso.
+        if bruto.startswith("id:"):
+            uid = bruto[3:].strip()
+            linha = conn.execute(
+                "SELECT actor_id, handle FROM actor "
+                "WHERE platform = ? AND platform_user_id = ?",
+                (PLAT_X, uid)).fetchone()
+            if not linha:
+                falhas.append((bruto, "id desconhecido no banco — registre pelo "
+                                      "handle, ou carregue o arquivo que o contém"))
+                continue
+            upsert_actor(conn, PLAT_X, uid, tier, linha["handle"])
+            ok.append((linha["handle"] or uid, uid))
+            continue
+
         handle = bruto.lstrip("@").strip()
         if not handle:
             continue
@@ -445,3 +463,38 @@ def procurar_ator(conn: sqlite3.Connection, platform: str, termo: str,
         (platform, f"%{termo}%", limite),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def remover_sementes(conn: sqlite3.Connection, platform: str,
+                     entries: Iterable[str]) -> list[tuple[str, str]]:
+    """Rebaixa sementes para tier C. Devolve o que de fato foi rebaixado.
+
+    A outra metade da curadoria. `upsert_actor` nunca rebaixa, e com razão:
+    tier não pode oscilar com a ordem de chegada dos eventos. Mas isso deixava
+    um erro de curadoria sem conserto — uma conta homônima registrada por
+    engano seguiria tier A para sempre, coletada toda semana, gastando página
+    de API numa conta de 1 tweet.
+
+    Rebaixar é "pare de coletar", NÃO "apague o que veio": o post e a aresta de
+    uma semana em que ela foi coletada continuam sendo fato, e sumir com eles
+    faria a série temporal mentir sobre o passado.
+    """
+    rebaixados: list[tuple[str, str]] = []
+    for bruto in entries:
+        bruto = bruto.strip()
+        if not bruto:
+            continue
+        if bruto.startswith("id:"):
+            onde, valor = "platform_user_id = ?", bruto[3:].strip()
+        else:
+            onde, valor = "handle = ? COLLATE NOCASE", bruto.lstrip("@")
+        linha = conn.execute(
+            f"SELECT actor_id, handle, platform_user_id, tier FROM actor "
+            f"WHERE platform = ? AND {onde}", (platform, valor)).fetchone()
+        if not linha or linha["tier"] == "C":
+            continue
+        conn.execute("UPDATE actor SET tier = 'C', last_seen_at = ? "
+                     "WHERE actor_id = ?", (utcnow(), linha["actor_id"]))
+        rebaixados.append((linha["handle"] or linha["platform_user_id"],
+                           linha["platform_user_id"]))
+    return rebaixados

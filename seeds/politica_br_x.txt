@@ -5,24 +5,32 @@
 # o formato certo para produzir um grafo com estrutura legível.
 #
 # `?` = handle não confirmado pelo curador; conferir antes de usar.
+#
+# `id:<n>` = conta identificada pelo id, e não pelo handle. Quatro entradas
+# viraram isto depois que o registro resolveu para homônimos: o handle óbvio de
+# figura pública costuma estar ocupado por conta abandonada ou de fã, e o
+# registro não tem como perceber — ele pergunta um nome e recebe um id daquele
+# nome. Quem desempatou foi o arquivo de 2023, por arestas RECEBIDAS
+# (`nabote quem <termo>`). O id não muda; registrar por ele não custa
+# requisição, porque o ator já está no banco.
 
 # --- esquerda / governo ---
 LulaOficial
-?FernandoHaddad         # ministro da Fazenda — confirmar
+id:354095556            # Haddad_Fernando · o handle óbvio é conta de 46 tweets
 gleisi
 GuilhermeBoulos
 randolfeap
 ManuelaDavila
-?ErikaHilton            # confirmar
+id:738143559920934912   # ErikakHilton, com k · `ErikaHilton` é outra pessoa
 
 # --- centro-esquerda / pauta ambiental ---
 MarinaSilva
 cirogomes
 
 # --- centro / centrão institucional ---
-?SimoneTebet            # confirmar
+id:2508415207           # simonetebetbr · `simonetebet` tem 0 tweets
 ?RodrigoPacheco         # confirmar
-?ArthurLira             # confirmar
+id:1086390169970884613  # ArthurLira_ com sublinhado · o sem sublinhado é outro
 ?GeraldoAlckmin         # confirmar
 
 # --- centro-direita liberal / governos estaduais ---
