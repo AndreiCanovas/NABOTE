@@ -1078,3 +1078,57 @@ class TestAvisoPrevio(unittest.TestCase):
         saida = self._preflight(creditos=187, teto=1.00)
         self.assertNotIn("US$ 1.00", saida)
         self.assertIn("0.00187", saida)
+
+
+class TestStatusPorPlataforma(unittest.TestCase):
+    """`status` conta o banco inteiro. Num banco onde o arquivo de 2023 tem
+    milhões de linhas, isso enterra as 529 que acabaram de chegar do X —
+    a resposta a "o que temos de dados" fica ilegível justamente na parte nova.
+    """
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli, db, ingest
+        from nabote.events import NormalizedEvent, Target
+        self.cli, self.ingest = cli, ingest
+        self._tmp = tempfile.TemporaryDirectory()
+        self.caminho = Path(self._tmp.name) / "s.db"
+        conn = db.connect(self.caminho)
+        db.migrate(conn, ROOT / "migrations")
+        run = ingest.start_run(conn, "twitterapi_io")
+        ingest.upsert_actor(conn, "x", "1", "A", "semente_x")
+        ingest.upsert_actor(conn, "bluesky", "did:plc:z", "A", "outra.bsky.social")
+        ingest.handle_event(conn, run, NormalizedEvent(
+            platform="x", kind="post", actor_uid="1", actor_handle="semente_x",
+            occurred_at="2026-09-21T10:00:00Z", post_uid="p1", post_type="repost",
+            targets=[Target(kind="repost", uid="99", handle="amplificado",
+                            display_name="Quem Recebeu")]), ingest.Stats())
+        ingest.handle_event(conn, run, NormalizedEvent(
+            platform="bluesky", kind="post", actor_uid="did:plc:z",
+            occurred_at="2026-09-21T10:00:00Z", post_uid="b1", post_type="original"),
+            ingest.Stats())
+        conn.commit(); conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _status(self, platform=None):
+        import argparse, contextlib, io as _io
+        saida = _io.StringIO()
+        with contextlib.redirect_stdout(saida):
+            self.cli.cmd_status(argparse.Namespace(db=self.caminho, platform=platform))
+        return saida.getvalue()
+
+    def test_sem_filtro_continua_mostrando_o_banco_inteiro(self):
+        self.assertIn("schema", self._status())
+
+    def test_com_plataforma_separa_o_que_e_daquela_fonte(self):
+        saida = self._status("x")
+        self.assertIn("semente_x", saida)
+        self.assertNotIn("outra.bsky.social", saida)
+
+    def test_mostra_quem_recebeu_sem_nunca_ter_sido_coletado(self):
+        """O ator Tier C é metade do grafo e não aparece em contagem de post."""
+        saida = self._status("x")
+        self.assertIn("amplificado", saida)
+        self.assertIn("Quem Recebeu", saida)

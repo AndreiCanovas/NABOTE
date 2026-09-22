@@ -143,6 +143,65 @@ def cmd_init(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _status_da_plataforma(conn, platform: str) -> None:
+    """O que UMA fonte trouxe, separado do resto do banco.
+
+    Existe porque a contagem global não responde a pergunta. Num banco com
+    milhões de linhas do arquivo de 2023, as 529 que chegaram do X hoje somem
+    no total — e é sobre as novas que se quer saber.
+    """
+    def q(sql, *p):
+        return conn.execute(sql, p).fetchall()
+
+    ROTULO = {"A": "sementes, coletadas toda semana",
+              "B": "coletadas todo mês",
+              "C": "nunca coletadas — existem por serem alvo de aresta"}
+
+    print(f"\n=== atores de {platform} ===")
+    for r in q("SELECT tier, COUNT(*) n FROM actor WHERE platform=? "
+               "GROUP BY tier ORDER BY tier", platform):
+        print(f"  {r['tier']}  {r['n']:>6}  {ROTULO.get(r['tier'], '')}")
+
+    print(f"\n=== posts ===")
+    for r in q("SELECT post_type, COUNT(*) n FROM post WHERE platform=? "
+               "GROUP BY post_type ORDER BY n DESC", platform):
+        print(f"  {r['post_type']:<10} {r['n']:>6}")
+    r = q("SELECT MIN(created_at) a, MAX(created_at) b FROM post "
+          "WHERE platform=?", platform)[0]
+    if r["a"]:
+        print(f"  período    {r['a'][:10]} a {r['b'][:10]}")
+
+    print(f"\n=== arestas ===")
+    for r in q("SELECT i.kind, COUNT(*) n FROM interaction i "
+               "JOIN post p ON p.post_id = i.post_id WHERE p.platform=? "
+               "GROUP BY i.kind ORDER BY n DESC", platform):
+        print(f"  {r['kind']:<10} {r['n']:>6}")
+
+    print(f"\n=== o que cada semente rendeu ===")
+    for r in q("""SELECT a.handle,
+                         COUNT(DISTINCT p.post_id) posts,
+                         COUNT(i.interaction_id)   arestas
+                  FROM actor a
+                  LEFT JOIN post p ON p.actor_id = a.actor_id AND p.platform = ?
+                  LEFT JOIN interaction i ON i.post_id = p.post_id
+                  WHERE a.platform = ? AND a.tier = 'A'
+                  GROUP BY a.actor_id ORDER BY posts DESC, a.handle""",
+               platform, platform):
+        nada = "   ← nada veio" if not r["posts"] else ""
+        print(f"  {(r['handle'] or '—'):<22} {r['posts']:>4} posts  "
+              f"{r['arestas']:>4} arestas{nada}")
+
+    print(f"\n=== quem mais recebeu, sem nunca ter sido coletado ===")
+    for r in q("""SELECT d.handle, d.display_name, COUNT(*) n
+                  FROM interaction i
+                  JOIN post p ON p.post_id = i.post_id AND p.platform = ?
+                  JOIN actor d ON d.actor_id = i.dst_actor_id
+                  WHERE d.tier = 'C'
+                  GROUP BY d.actor_id ORDER BY n DESC LIMIT 15""", platform):
+        print(f"  {r['n']:>4}  {(r['handle'] or '—'):<22} "
+              f"{(r['display_name'] or '—')[:32]}")
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     path = Path(args.db)
     if not path.exists():
@@ -151,6 +210,9 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     conn = db.connect(path)
     try:
+        if getattr(args, "platform", None):
+            _status_da_plataforma(conn, args.platform)
+            return 0
         print(f"banco    {path}  ({path.stat().st_size / 1024:.1f} KiB)")
         print(f"schema   v{db.current_version(conn)}")
 
@@ -1611,7 +1673,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="cria o banco e aplica as migrações pendentes")
-    sub.add_parser("status", help="mostra versão do schema, volume e custo acumulado")
+    status = sub.add_parser(
+        "status", help="mostra versão do schema, volume e custo acumulado")
+    status.add_argument("--platform", choices=["x", "bluesky"],
+                        help="em vez do banco inteiro, detalha o que UMA fonte "
+                             "trouxe: atores por tier, arestas, e o que cada "
+                             "semente rendeu")
 
     fetch = sub.add_parser("fetch", help="coleta eventos e grava post/interaction")
     fetch.add_argument("--fixture", help="lê de um arquivo JSONL em vez da rede (testes)")

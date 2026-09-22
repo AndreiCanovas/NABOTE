@@ -446,6 +446,13 @@ class XApiSource(Transporte):
         Não é multiplicação de tabela de preço, e a diferença não é acadêmica —
         a primeira captura custou 18 créditos onde a tabela publicada previa
         45 ou mais. Número de custo em relatório sai daqui.
+
+        MAS É PISO, NÃO EXATO. O provedor liquida a cobrança depois de
+        responder. A primeira coleta real leu 187 créditos de saldo ao
+        terminar e o painel mostrou -428 pouco depois: 615 créditos, ~8% do
+        run, ainda não tinham entrado. Quem lê este número num relatório está
+        lendo o mínimo que se gastou, e o teto que depende dele pode deixar
+        passar a diferença — que foi como a conta ficou negativa.
         """
         if self.saldo_inicial is None or self.saldo_atual is None:
             return 0.0
