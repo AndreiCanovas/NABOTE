@@ -412,3 +412,36 @@ def search_actors_enriched(name: str, limit: int = 5) -> list[dict]:
         c["dominio_proprio"] = not c["handle"].endswith(".bsky.social")
     candidatos.sort(key=lambda c: (c["followers"] is None, -(c["followers"] or 0)))
     return candidatos
+
+
+def procurar_ator(conn: sqlite3.Connection, platform: str, termo: str,
+                  limite: int = 12) -> list[dict]:
+    """Atores cujo handle contém `termo`, ordenados por quanto FORAM citados.
+
+    Existe por causa de uma falha silenciosa do registro de sementes: ele
+    pergunta um handle e recebe um id, e o id é mesmo daquele handle — só que
+    o handle óbvio de uma figura pública costuma estar ocupado por conta
+    abandonada, de fã ou de paródia. `fernandohaddad` devolveu uma conta de 46
+    tweets e 261 seguidores, e nada no registro podia perceber isso.
+
+    O que percebe é a contagem de arestas RECEBIDAS no arquivo que já está no
+    disco. Quem é de fato amplificado aparece milhares de vezes; o homônimo não
+    aparece. Recebidas e não enviadas de propósito: figura pública é destino de
+    amplificação, e quem ENVIA muito é outra coisa — geralmente fábrica de
+    retuíte, que é exatamente o que não se quer confundir com o político.
+    """
+    rows = conn.execute(
+        """SELECT a.actor_id, a.handle, a.platform_user_id, a.display_name, a.tier,
+                  (SELECT COUNT(*) FROM interaction i
+                    WHERE i.dst_actor_id = a.actor_id) recebidas,
+                  (SELECT COUNT(*) FROM interaction i
+                    WHERE i.src_actor_id = a.actor_id) enviadas,
+                  (SELECT COUNT(*) FROM post p
+                    WHERE p.actor_id = a.actor_id)     posts
+             FROM actor a
+            WHERE a.platform = ? AND a.handle LIKE ? COLLATE NOCASE
+            ORDER BY recebidas DESC, posts DESC, a.handle
+            LIMIT ?""",
+        (platform, f"%{termo}%", limite),
+    ).fetchall()
+    return [dict(r) for r in rows]

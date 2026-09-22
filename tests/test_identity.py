@@ -218,3 +218,61 @@ class TestUnofficialFlag(unittest.TestCase):
     def test_flag_is_a_signal_not_a_verdict(self):
         """Bio vazia não diz nada — e é justamente o caso mais ambíguo."""
         self.assertIsNone(identity.flag_declared_unofficial("", ""))
+
+
+class TestProcurarAtor(unittest.TestCase):
+    """Quatro sementes resolveram para homônimos: o registro pediu
+    `fernandohaddad` e recebeu uma conta de 46 tweets e 261 seguidores.
+
+    O handle óbvio de uma figura pública costuma estar ocupado por conta
+    abandonada, de fã ou de paródia, e o registro não tem como saber — ele
+    pergunta um nome e recebe um id, e o id É daquele nome.
+
+    Quem sabe é o arquivo de 2023, que já está no disco: a conta de verdade
+    aparece lá recebendo milhares de arestas, e a homônima não aparece. É a
+    pergunta respondida por dado que já foi pago.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(Path(self._tmp.name) / "p.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        from nabote import ingest
+        from nabote.events import NormalizedEvent, Target
+        run = ingest.start_run(self.conn, "x_parquet:2023.zip")
+        real = ingest.upsert_actor(self.conn, "x", "43163406", "C", "Haddad_Fernando")
+        ingest.upsert_actor(self.conn, "x", "999", "C", "fernandohaddad")
+        for i in range(30):                      # o de verdade é muito citado
+            ingest.handle_event(self.conn, run, NormalizedEvent(
+                platform="x", kind="post", actor_uid=f"amp{i}",
+                actor_handle=f"quem_amplifica{i}", occurred_at="2023-05-01T10:00:00Z",
+                post_uid=f"p{i}", post_type="repost",
+                targets=[Target(kind="repost", uid="43163406",
+                                handle="Haddad_Fernando")]), ingest.Stats())
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_acha_pelo_pedaco_do_handle(self):
+        achados = identity.procurar_ator(self.conn, "x", "haddad")
+        self.assertEqual({a["handle"] for a in achados},
+                         {"Haddad_Fernando", "fernandohaddad"})
+
+    def test_ordena_por_quem_e_de_fato_citado(self):
+        """É a contagem de arestas recebidas que separa a conta real da
+        homônima — não o handle, que é justamente o que engana."""
+        achados = identity.procurar_ator(self.conn, "x", "haddad")
+        self.assertEqual(achados[0]["handle"], "Haddad_Fernando")
+        self.assertEqual(achados[0]["recebidas"], 30)
+        self.assertEqual(achados[1]["recebidas"], 0)
+
+    def test_nao_acha_de_outra_plataforma(self):
+        from nabote import ingest
+        ingest.upsert_actor(self.conn, "bluesky", "did:plc:h", "C", "haddad.bsky.social")
+        achados = identity.procurar_ator(self.conn, "x", "haddad")
+        self.assertNotIn("haddad.bsky.social", {a["handle"] for a in achados})
+
+    def test_busca_vazia_devolve_lista_vazia(self):
+        self.assertEqual(identity.procurar_ator(self.conn, "x", "zzzznaoexiste"), [])

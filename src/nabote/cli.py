@@ -306,6 +306,39 @@ def _status_recortado(conn, *, source: str | None, platform: str | None) -> None
               f"{(r['display_name'] or '—')[:32]}")
 
 
+def cmd_quem(args: argparse.Namespace) -> int:
+    """Procura um ator pelo handle no que já está no banco.
+
+    Serve para uma pergunta que o registro de sementes não sabe responder:
+    "este handle é mesmo a pessoa?". O registro pede um nome e recebe um id —
+    e o id é daquele nome, mesmo quando o nome está ocupado por conta de fã.
+    Quem desempata é o arquivo histórico, de graça.
+    """
+    conn = db.connect(args.db)
+    try:
+        achados = identity.procurar_ator(conn, args.platform, args.termo,
+                                         limite=args.top)
+        if not achados:
+            print(f"nenhum ator com {args.termo!r} no handle, em {args.platform}.\n"
+                  f"O arquivo histórico é quem responde isto — se ele não foi "
+                  f"carregado, não há com o que comparar.", file=sys.stderr)
+            return 1
+        print(f"{len(achados)} ator(es) com {args.termo!r} no handle "
+              f"— ordenados por quanto FORAM citados\n")
+        print(f"  {'handle':<26} {'recebidas':>10} {'enviadas':>9} "
+              f"{'posts':>7}  tier  id")
+        for a in achados:
+            print(f"  {(a['handle'] or '—'):<26} {a['recebidas']:>10,} "
+                  f"{a['enviadas']:>9,} {a['posts']:>7,}  {a['tier']:^4}  "
+                  f"{a['platform_user_id']}".replace(",", "."))
+        print("\n  'recebidas' é o que separa a conta real da homônima: figura\n"
+              "  pública é destino de amplificação. Quem só ENVIA muito costuma\n"
+              "  ser fábrica de retuíte, que não é a conta que você procura.")
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     path = Path(args.db)
     if not path.exists():
@@ -1778,6 +1811,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="cria o banco e aplica as migrações pendentes")
+    quem = sub.add_parser(
+        "quem", help="procura um ator pelo handle no que já está no banco")
+    quem.add_argument("termo", help="pedaço do handle, sem @")
+    quem.add_argument("--platform", default="x", choices=["x", "bluesky"])
+    quem.add_argument("--top", type=int, default=12)
+
     status = sub.add_parser(
         "status", help="mostra versão do schema, volume e custo acumulado")
     status.add_argument("--source", choices=["x", "bluesky"],
@@ -2001,6 +2040,7 @@ def main(argv: list[str] | None = None) -> int:
             "label": cmd_label,
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "candidatos": cmd_candidatos,
+        "quem": cmd_quem,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)
 
