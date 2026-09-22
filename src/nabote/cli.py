@@ -88,7 +88,26 @@ def _fonte_x(conn, args):
               f"{sum(1 for c in contas if c in cursores)} com cursor guardado")
         requisicoes = len(contas) * args.paginas
 
-    print(f"teto     {'US$ %.2f por ciclo' % teto if teto else 'nenhum'}")
+    # O saldo custa uma requisição e vale cada centavo dela: sem ele o aviso
+    # prévio fala de tempo e de um teto que pode ser dez vezes o dinheiro que
+    # existe na conta — que foi como a primeira coleta gastou três quartos do
+    # crédito sem nada disparar.
+    saldo = fonte.saldo()
+    saldo_usd = saldo / x_api.CREDITOS_POR_USD
+    estimado = x_api.estimativa_usd(requisicoes)
+    teto = x_api.teto_efetivo(teto, saldo_usd)
+    fonte.teto_usd = teto
+
+    print(f"saldo    US$ {saldo_usd:.5f} · {saldo} créditos")
+    print(f"custo    ~US$ {estimado:.5f} estimado · {requisicoes} páginas × "
+          f"~{x_api.TWEETS_POR_PAGINA} tweets × US$ {x_api.CUSTO_POR_TWEET_USD}")
+    print(f"teto     US$ {teto:.5f} (o menor entre o configurado e o saldo)")
+    if estimado > saldo_usd:
+        print(f"\n  ⚠  O PLANO NÃO CABE NO SALDO. Ele para no meio, em "
+              f"~{int(saldo_usd / (x_api.TWEETS_POR_PAGINA * x_api.CUSTO_POR_TWEET_USD))}"
+              f" de {requisicoes} páginas.\n"
+              f"     Recarregue, ou reduza a coleta (menos sementes, "
+              f"ou --paginas menor).\n")
     segundos = requisicoes * args.intervalo
     quanto = f"{segundos:.0f}s" if segundos < 90 else f"{segundos / 60:.0f} min"
     print(f"tempo    ~{quanto} · {requisicoes} requisições a "

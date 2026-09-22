@@ -74,6 +74,37 @@ INTERVALO_PADRAO = 5.5
 # exatamente quanto esperar. Desistir nele obriga a refazer o lote inteiro.
 TENTATIVAS_NO_429 = 3
 
+# O QUE SE PAGA É TWEET DEVOLVIDO, NÃO REQUISIÇÃO. A tabela cobra US$ 0,15 por
+# 1.000 tweets, e a primeira coleta real mediu 13,95 créditos por tweet — 93%
+# da tabela. Uma página de timeline traz ~17 tweets, então ela custa ~240
+# créditos, contra ~18 de um perfil. Planejar por requisição erra por uma
+# ordem de grandeza, que foi exatamente o que aconteceu: 31 "requisições
+# baratas" consumiram três quartos do crédito da conta.
+CUSTO_POR_TWEET_USD = 0.00015
+TWEETS_POR_PAGINA = 20          # medida: 17,1 em 31 páginas; arredondado para cima
+
+
+def estimativa_usd(paginas: int) -> float:
+    """Quanto um plano de N páginas deve custar, ANTES de gastar.
+
+    Arredonda para cima de propósito: uma estimativa que erra para baixo é
+    exatamente a que não impede o estrago.
+    """
+    return paginas * TWEETS_POR_PAGINA * CUSTO_POR_TWEET_USD
+
+
+def teto_efetivo(configurado: float | None, saldo_usd: float) -> float:
+    """O teto que vale de verdade.
+
+    Teto acima do saldo não é teto: um limite de US$ 1,00 numa conta com
+    US$ 0,10 deixa gastar tudo antes de disparar, que é como a conta esvaziou
+    na primeira coleta. E "nenhum teto" com dinheiro na conta é a mesma coisa
+    sem nem a ilusão do número.
+    """
+    if configurado is None:
+        return saldo_usd
+    return min(configurado, saldo_usd)
+
 # Formato legado do Twitter, usado dentro do objeto `author` embutido.
 _LEGADO = "%a %b %d %H:%M:%S %z %Y"
 
@@ -381,10 +412,10 @@ class XApiSource(Transporte):
                  paginas_por_conta: int = 1, teto_usd: float | None = None,
                  conferir_saldo_a_cada: int = 10,
                  intervalo: float = INTERVALO_PADRAO, incluir_respostas: bool = True,
-                 abrir: Any = None):
+                 abrir: Any = None, dormir: Any = None):
         if bool(contas) == bool(query):
             raise ValueError("passe contas OU query, nunca os dois nem nenhum")
-        super().__init__(api_key, intervalo=intervalo, abrir=abrir)
+        super().__init__(api_key, intervalo=intervalo, abrir=abrir, dormir=dormir)
         self.contas = list(contas or [])
         self.query = query
         self.cursores = dict(cursores or {})

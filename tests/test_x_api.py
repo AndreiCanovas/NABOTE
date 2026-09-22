@@ -978,3 +978,103 @@ class TestPerfilDeCarona(unittest.TestCase):
         mencoes = [a for a in ev.targets if a.kind == "mention"]
         self.assertTrue(mencoes)
         self.assertIsNone(mencoes[0].bio)
+
+
+# --------------------------------------------------------------------------
+# o teto que não segurou nada
+# --------------------------------------------------------------------------
+
+class TestTetoContraSaldo(unittest.TestCase):
+    """A primeira coleta real gastou 7.380 dos 9.737 créditos que havia, com
+    um teto de US$ 1,00 configurado. O teto nunca disparou porque US$ 1,00 são
+    100.000 créditos — dez vezes TODO o saldo. Teto acima do saldo não é teto.
+
+    E o aviso prévio não ajudou: imprimiu tempo e teto, nenhum dos dois em
+    dinheiro contra o que havia na conta.
+    """
+
+    def test_a_estimativa_conta_tweets_e_nao_requisicoes(self):
+        """31 requisições custaram US$ 0,074 porque trouxeram 529 tweets. A
+        conta por requisição erra por uma ordem de grandeza."""
+        est = x_api.estimativa_usd(31)
+        self.assertGreater(est, 0.05, "estimativa barata demais — conta por requisição?")
+        self.assertLess(est, 0.15)
+
+    def test_o_teto_nunca_passa_do_saldo(self):
+        saldo_usd = 0.00187                       # o que sobrou da primeira coleta
+        self.assertEqual(x_api.teto_efetivo(1.00, saldo_usd), saldo_usd)
+
+    def test_sem_teto_configurado_o_saldo_vira_o_teto(self):
+        """'nenhum teto' com dinheiro na conta é como a conta ficou vazia."""
+        self.assertEqual(x_api.teto_efetivo(None, 0.05), 0.05)
+
+    def test_teto_abaixo_do_saldo_e_respeitado(self):
+        self.assertEqual(x_api.teto_efetivo(0.02, 0.05), 0.02)
+
+
+class TestAvisoPrevio(unittest.TestCase):
+    """O aviso prévio existe para a pessoa decidir ANTES de gastar. Com teto,
+    tempo e nenhum número de dinheiro contra o saldo, ele não deu a informação
+    que decidia: que o plano custava metade do que havia na conta."""
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli, db, identity, ingest
+        self.cli, self.ingest = cli, ingest
+        self._tmp = tempfile.TemporaryDirectory()
+        self.raiz = Path(self._tmp.name)
+        self.conn = db.connect(self.raiz / "s.db")
+        db.migrate(self.conn, ROOT / "migrations")
+        ingest.upsert_actor(self.conn, "x", "1", "A", "semente_um")
+        ingest.upsert_actor(self.conn, "x", "2", "A", "semente_dois")
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _preflight(self, creditos, teto=None):
+        import argparse, contextlib, io as _io, os
+
+        def abrir(req, timeout=None):
+            return _Resposta({"recharge_credits": 0,
+                              "total_bonus_credits": creditos})
+
+        from nabote import sources
+        real = sources.XApiSource
+        os.environ["NABOTE_X_API_KEY"] = "chave_falsa_de_teste"
+        os.environ.pop("NABOTE_BUDGET_USD_PER_CYCLE", None)
+        falsa = lambda k, **kw: real(  # noqa: E731
+            k, **{**kw, "intervalo": 0, "abrir": abrir, "dormir": lambda s: None})
+        falsa.name = real.name        # `_fonte_x` lê o nome pela classe
+        sources.XApiSource = falsa
+        args = argparse.Namespace(query=None, teto_usd=teto, paginas=1, intervalo=5.5)
+        saida = _io.StringIO()
+        try:
+            with contextlib.redirect_stdout(saida):
+                self.cli._fonte_x(self.conn, args)
+        finally:
+            sources.XApiSource = real
+        return saida.getvalue()
+
+    def test_mostra_o_saldo_e_o_custo_estimado(self):
+        saida = self._preflight(creditos=9737)
+        self.assertIn("saldo", saida)
+        self.assertIn("0.09737", saida)     # US$ do saldo, não só créditos
+        self.assertIn("estimado", saida)
+
+    def test_grita_quando_o_plano_nao_cabe_no_saldo(self):
+        """187 créditos e um plano de US$ 0,006: precisa ser impossível de
+        não ver."""
+        saida = self._preflight(creditos=187)
+        self.assertIn("NÃO CABE", saida.upper())
+
+    def test_nao_grita_quando_cabe(self):
+        saida = self._preflight(creditos=500_000)
+        self.assertNotIn("NÃO CABE", saida.upper())
+
+    def test_o_teto_exibido_e_o_que_vale(self):
+        """Exibir US$ 1,00 quando o saldo é US$ 0,0019 foi o que deu a falsa
+        sensação de proteção."""
+        saida = self._preflight(creditos=187, teto=1.00)
+        self.assertNotIn("US$ 1.00", saida)
+        self.assertIn("0.00187", saida)
