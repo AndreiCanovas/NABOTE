@@ -143,62 +143,112 @@ def cmd_init(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def _status_da_plataforma(conn, platform: str) -> None:
-    """O que UMA fonte trouxe, separado do resto do banco.
+# `fetch --source x` e `seeds --source x` já chamam o provedor de "x". O nome
+# interno dele é outro, e a tradução mora aqui para que a pessoa nunca precise
+# saber os dois.
+FONTE_DO_APELIDO = {"x": "twitterapi_io", "bluesky": "bluesky_jetstream"}
 
-    Existe porque a contagem global não responde a pergunta. Num banco com
+
+def _corte_do_status(conn, *, source: str | None, platform: str | None):
+    """(condição SQL sobre `post`, parâmetros, título, plataforma) do corte.
+
+    A distinção que este comando errava: PLATAFORMA diz de que rede o dado é;
+    FONTE diz por onde ele entrou. O arquivo de 2023 e a coleta por API são a
+    mesma plataforma e fontes diferentes, então `platform='x'` responde
+    "5,8 milhões de reposts" a uma pergunta sobre uma coleta de 529 posts.
+    """
+    if source:
+        nome = FONTE_DO_APELIDO.get(source, source)
+        return ("p.run_id IN (SELECT run_id FROM collection_run WHERE source = ?)",
+                [nome], f"fonte {nome}", source)
+    return ("p.platform = ?", [platform], f"plataforma {platform}", platform)
+
+
+def _status_recortado(conn, *, source: str | None, platform: str | None) -> None:
+    """O que UM corte do banco contém.
+
+    Existe porque a contagem global não responde a pergunta: num banco com
     milhões de linhas do arquivo de 2023, as 529 que chegaram do X hoje somem
     no total — e é sobre as novas que se quer saber.
     """
-    def q(sql, *p):
-        return conn.execute(sql, p).fetchall()
+    onde, args, titulo, rede = _corte_do_status(
+        conn, source=source, platform=platform)
+
+    def milhar(n) -> str:
+        return f"{n:,}".replace(",", ".")
+
+    def q(sql, *extra):
+        return conn.execute(sql, (*extra, *args)).fetchall()
 
     ROTULO = {"A": "sementes, coletadas toda semana",
               "B": "coletadas todo mês",
               "C": "nunca coletadas — existem por serem alvo de aresta"}
 
-    print(f"\n=== atores de {platform} ===")
-    for r in q("SELECT tier, COUNT(*) n FROM actor WHERE platform=? "
-               "GROUP BY tier ORDER BY tier", platform):
-        print(f"  {r['tier']}  {r['n']:>6}  {ROTULO.get(r['tier'], '')}")
+    print(f"\n=== {titulo} ===")
+
+    # Um corte por plataforma junta fontes; dizer quais é o que impede a
+    # leitura errada que este comando já produziu uma vez.
+    fontes = q(f"SELECT r.source, COUNT(*) n FROM post p "
+               f"JOIN collection_run r ON r.run_id = p.run_id WHERE {onde} "
+               f"GROUP BY r.source ORDER BY n DESC")
+    if len(fontes) > 1:
+        print("  ATENÇÃO: este corte junta mais de uma fonte —")
+        for r in fontes:
+            print(f"    {r['source']:<34} {milhar(r['n']):>9} posts")
+        print("  Para ver só a coleta por API: nabote status --source x")
+
+    print(f"\n=== atores ===")
+    for r in q(f"""SELECT a.tier, COUNT(DISTINCT a.actor_id) n FROM actor a
+                   WHERE a.actor_id IN (
+                     SELECT p.actor_id FROM post p WHERE {onde}
+                     UNION
+                     SELECT i.dst_actor_id FROM interaction i
+                     JOIN post p ON p.post_id = i.post_id WHERE {onde})
+                   GROUP BY a.tier ORDER BY a.tier""", *args):
+        print(f"  {r['tier']}  {milhar(r['n']):>9}  {ROTULO.get(r['tier'], '')}")
 
     print(f"\n=== posts ===")
-    for r in q("SELECT post_type, COUNT(*) n FROM post WHERE platform=? "
-               "GROUP BY post_type ORDER BY n DESC", platform):
-        print(f"  {r['post_type']:<10} {r['n']:>6}")
-    r = q("SELECT MIN(created_at) a, MAX(created_at) b FROM post "
-          "WHERE platform=?", platform)[0]
+    for r in q(f"SELECT p.post_type, COUNT(*) n FROM post p WHERE {onde} "
+               f"GROUP BY p.post_type ORDER BY n DESC"):
+        print(f"  {r['post_type']:<10} {milhar(r['n']):>11}")
+    r = q(f"SELECT MIN(p.created_at) a, MAX(p.created_at) b FROM post p "
+          f"WHERE {onde}")[0]
     if r["a"]:
         print(f"  período    {r['a'][:10]} a {r['b'][:10]}")
 
     print(f"\n=== arestas ===")
-    for r in q("SELECT i.kind, COUNT(*) n FROM interaction i "
-               "JOIN post p ON p.post_id = i.post_id WHERE p.platform=? "
-               "GROUP BY i.kind ORDER BY n DESC", platform):
-        print(f"  {r['kind']:<10} {r['n']:>6}")
+    for r in q(f"SELECT i.kind, COUNT(*) n FROM interaction i "
+               f"JOIN post p ON p.post_id = i.post_id WHERE {onde} "
+               f"GROUP BY i.kind ORDER BY n DESC"):
+        print(f"  {r['kind']:<10} {milhar(r['n']):>11}")
 
     print(f"\n=== o que cada semente rendeu ===")
-    for r in q("""SELECT a.handle,
-                         COUNT(DISTINCT p.post_id) posts,
-                         COUNT(i.interaction_id)   arestas
-                  FROM actor a
-                  LEFT JOIN post p ON p.actor_id = a.actor_id AND p.platform = ?
-                  LEFT JOIN interaction i ON i.post_id = p.post_id
-                  WHERE a.platform = ? AND a.tier = 'A'
-                  GROUP BY a.actor_id ORDER BY posts DESC, a.handle""",
-               platform, platform):
+    # `conn.execute` direto e não o ajudante `q`: aqui o `?` do corte aparece
+    # ANTES do `?` da plataforma no texto do SQL, e o ajudante põe os extras
+    # na frente. Com a ordem trocada a consulta não dá erro — devolve vazio,
+    # que é a forma mais cara de errar.
+    for r in conn.execute(f"""SELECT a.handle,
+                          COUNT(DISTINCT p.post_id)      posts,
+                          COUNT(i.interaction_id)        arestas
+                   FROM actor a
+                   LEFT JOIN post p
+                          ON p.actor_id = a.actor_id AND {onde}
+                   LEFT JOIN interaction i ON i.post_id = p.post_id
+                   WHERE a.tier = 'A' AND a.platform = ?
+                   GROUP BY a.actor_id ORDER BY posts DESC, a.handle""",
+                          (*args, rede)).fetchall():
         nada = "   ← nada veio" if not r["posts"] else ""
-        print(f"  {(r['handle'] or '—'):<22} {r['posts']:>4} posts  "
-              f"{r['arestas']:>4} arestas{nada}")
+        print(f"  {(r['handle'] or '—'):<22} {r['posts']:>5} posts  "
+              f"{r['arestas']:>5} arestas{nada}")
 
     print(f"\n=== quem mais recebeu, sem nunca ter sido coletado ===")
-    for r in q("""SELECT d.handle, d.display_name, COUNT(*) n
-                  FROM interaction i
-                  JOIN post p ON p.post_id = i.post_id AND p.platform = ?
-                  JOIN actor d ON d.actor_id = i.dst_actor_id
-                  WHERE d.tier = 'C'
-                  GROUP BY d.actor_id ORDER BY n DESC LIMIT 15""", platform):
-        print(f"  {r['n']:>4}  {(r['handle'] or '—'):<22} "
+    for r in q(f"""SELECT d.handle, d.display_name, COUNT(*) n
+                   FROM interaction i
+                   JOIN post p ON p.post_id = i.post_id
+                   JOIN actor d ON d.actor_id = i.dst_actor_id
+                   WHERE d.tier = 'C' AND {onde}
+                   GROUP BY d.actor_id ORDER BY n DESC LIMIT 15"""):
+        print(f"  {milhar(r['n']):>9}  {(r['handle'] or '—'):<22} "
               f"{(r['display_name'] or '—')[:32]}")
 
 
@@ -210,8 +260,9 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     conn = db.connect(path)
     try:
-        if getattr(args, "platform", None):
-            _status_da_plataforma(conn, args.platform)
+        if getattr(args, "source", None) or getattr(args, "platform", None):
+            _status_recortado(conn, source=getattr(args, "source", None),
+                              platform=getattr(args, "platform", None))
             return 0
         print(f"banco    {path}  ({path.stat().st_size / 1024:.1f} KiB)")
         print(f"schema   v{db.current_version(conn)}")
@@ -1675,10 +1726,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="cria o banco e aplica as migrações pendentes")
     status = sub.add_parser(
         "status", help="mostra versão do schema, volume e custo acumulado")
+    status.add_argument("--source", choices=["x", "bluesky"],
+                        help="detalha o que UMA FONTE trouxe — 'x' é a coleta "
+                             "por API, sem o arquivo de 2023 junto")
     status.add_argument("--platform", choices=["x", "bluesky"],
-                        help="em vez do banco inteiro, detalha o que UMA fonte "
-                             "trouxe: atores por tier, arestas, e o que cada "
-                             "semente rendeu")
+                        help="detalha tudo o que existe de UMA REDE, arquivo "
+                             "histórico incluído; avisa quando junta fontes")
 
     fetch = sub.add_parser("fetch", help="coleta eventos e grava post/interaction")
     fetch.add_argument("--fixture", help="lê de um arquivo JSONL em vez da rede (testes)")

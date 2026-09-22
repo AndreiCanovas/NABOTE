@@ -1132,3 +1132,70 @@ class TestStatusPorPlataforma(unittest.TestCase):
         saida = self._status("x")
         self.assertIn("amplificado", saida)
         self.assertIn("Quem Recebeu", saida)
+
+
+class TestStatusNaoMisturaFontes(unittest.TestCase):
+    """`--platform x` respondeu com 5,8 milhões de reposts a uma pergunta sobre
+    uma coleta de 529 posts.
+
+    O arquivo de 2023 entra com `platform='x'` porque É X. Plataforma diz de
+    QUE REDE o dado é; ela não separa o que foi coletado ontem do que foi
+    carregado de um zip de três anos atrás. A pergunta "o que esta coleta
+    trouxe" se corta por FONTE.
+    """
+
+    def setUp(self):
+        import tempfile
+        from nabote import cli, db, ingest
+        from nabote.events import NormalizedEvent, Target
+        self.cli = cli
+        self._tmp = tempfile.TemporaryDirectory()
+        self.caminho = Path(self._tmp.name) / "s.db"
+        conn = db.connect(self.caminho)
+        db.migrate(conn, ROOT / "migrations")
+        ingest.upsert_actor(conn, "x", "1", "A", "semente_x")
+
+        def post(run, uid, alvo, alvo_handle):
+            ingest.handle_event(conn, run, NormalizedEvent(
+                platform="x", kind="post", actor_uid="1", actor_handle="semente_x",
+                occurred_at="2026-09-21T10:00:00Z", post_uid=uid, post_type="repost",
+                targets=[Target(kind="repost", uid=alvo, handle=alvo_handle)]),
+                ingest.Stats())
+
+        # o arquivo de 2023: uma fonte, muitos posts
+        arquivo = ingest.start_run(conn, "x_parquet:2023.zip")
+        for i in range(20):
+            post(arquivo, f"velho{i}", "900", "alvo_do_arquivo")
+        # a coleta de ontem: outra fonte, um post
+        api = ingest.start_run(conn, "twitterapi_io")
+        post(api, "novo1", "901", "alvo_da_api")
+        conn.commit(); conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _status(self, **kw):
+        import argparse, contextlib, io as _io
+        args = argparse.Namespace(db=self.caminho,
+                                  **{"platform": None, "source": None, **kw})
+        saida = _io.StringIO()
+        with contextlib.redirect_stdout(saida):
+            self.cli.cmd_status(args)
+        return saida.getvalue()
+
+    def test_por_fonte_ignora_o_arquivo(self):
+        saida = self._status(source="x")
+        self.assertIn("alvo_da_api", saida)
+        self.assertNotIn("alvo_do_arquivo", saida)
+
+    def test_por_fonte_conta_so_os_posts_daquela_fonte(self):
+        """1 post, não 21."""
+        saida = self._status(source="x")
+        linha, = [l for l in saida.splitlines() if "semente_x" in l]
+        self.assertIn("1 posts", linha)
+
+    def test_por_plataforma_avisa_que_mistura(self):
+        """A visão da plataforma inteira é legítima — silenciosa é que não."""
+        saida = self._status(platform="x")
+        self.assertIn("x_parquet:2023.zip", saida)
+        self.assertIn("twitterapi_io", saida)
