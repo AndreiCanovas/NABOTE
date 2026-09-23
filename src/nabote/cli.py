@@ -14,7 +14,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import __version__, atproto, db, dossie, graph, identity, ingest, probe
+from . import __version__, atproto, db, dossie, graph, identity, ingest, probe, temas
 from .sources import x_api
 
 
@@ -346,6 +346,76 @@ def cmd_quem(args: argparse.Namespace) -> int:
             print("\n  ATENÇÃO: não há arquivo histórico neste banco. Sem ele o\n"
                   "  ranking não tem massa para separar conta real de homônima —\n"
                   "  ele está contando as últimas postagens de 31 contas.")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_temas(args: argparse.Namespace) -> int:
+    """Descobre, lista e confirma tema a partir do texto dos posts.
+
+    Três verbos num comando porque são um ciclo só: processar a janela propõe,
+    você confirma ou descarta, e a janela seguinte usa o que você decidiu.
+    """
+    from . import temas as temas_mod
+
+    conn = db.connect(args.db)
+    try:
+        if args.confirmar:
+            if not args.nome:
+                print("confirmar exige --nome: o tema precisa de um nome de "
+                      "gente, que é o que vai aparecer no relatório.",
+                      file=sys.stderr)
+                return 1
+            temas_mod.confirmar_tema(conn, args.confirmar, args.nome)
+            print(f"tema #{args.confirmar} confirmado como {args.nome!r}.\n"
+                  f"A partir de agora ele casa posts das próximas janelas, "
+                  f"com este mesmo id.")
+            return 0
+
+        if args.descartar:
+            temas_mod.descartar_tema(conn, args.descartar)
+            print(f"tema #{args.descartar} descartado — não será reproposto.")
+            return 0
+
+        if args.listar:
+            todos = temas_mod.listar_temas(conn, status=args.status)
+            if not todos:
+                print("nenhum tema ainda. Rode: nabote temas --window <segunda>")
+                return 0
+            print(f"{len(todos)} tema(s)\n")
+            for x in todos:
+                print(f"  #{x['topic_id']:<4} [{x['status']:<10}] "
+                      f"{x['posts']:>5} posts  {x['label']}")
+                print(f"        {', '.join(x['termos'][:10])}")
+            return 0
+
+        if not args.window:
+            print("diga a janela: --window <segunda-feira>, ex. 2026-09-21",
+                  file=sys.stderr)
+            return 1
+
+        propostos = temas_mod.propor_temas(
+            conn, args.window, platform=args.platform,
+            posts_minimos=args.min_posts)
+        confirmados = temas_mod.listar_temas(conn, status="confirmado")
+        if confirmados:
+            print(f"{len(confirmados)} tema(s) já confirmado(s) casaram primeiro:\n")
+            for x in confirmados:
+                print(f"  #{x['topic_id']:<4} {x['posts']:>5} posts  {x['label']}")
+            print()
+        if not propostos:
+            print("nenhuma proposta nova nesta janela.\n"
+                  "Ou tudo casou com tema já decidido, ou não houve termo "
+                  "repetido o bastante para formar grupo.")
+            return 0
+        print(f"{len(propostos)} tema(s) PROPOSTO(S) — nenhum conta no "
+              f"relatório até você decidir:\n")
+        for x in propostos:
+            print(f"  #{x['topic_id']:<4} {x['posts']:>5} posts  {x['label']}")
+            print(f"        {', '.join(x['termos'][:10])}")
+        print(f"\n  nabote temas --confirmar <id> --nome \"CPMI do INSS\"")
+        print(f"  nabote temas --descartar <id>")
         return 0
     finally:
         conn.close()
@@ -1860,6 +1930,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="cria o banco e aplica as migrações pendentes")
+    tm = sub.add_parser(
+        "temas", help="descobre tema no texto dos posts e guarda o que você confirma")
+    tm.add_argument("--window", help="janela YYYY-MM-DD (segunda-feira) a processar")
+    tm.add_argument("--platform", choices=["x", "bluesky"],
+                    help="restringe a uma rede")
+    tm.add_argument("--min-posts", dest="min_posts", type=int,
+                    default=temas.POSTS_MINIMOS,
+                    help=f"posts mínimos para um grupo virar proposta "
+                         f"(padrão: {temas.POSTS_MINIMOS})")
+    tm.add_argument("--listar", action="store_true", help="lista os temas guardados")
+    tm.add_argument("--status", choices=["proposto", "confirmado", "descartado"],
+                    help="com --listar, filtra por situação")
+    tm.add_argument("--confirmar", type=int, metavar="ID",
+                    help="confirma um tema proposto; exige --nome")
+    tm.add_argument("--nome", help="nome do tema ao confirmar")
+    tm.add_argument("--descartar", type=int, metavar="ID",
+                    help="recusa um tema; não volta a ser proposto")
+
     quem = sub.add_parser(
         "quem", help="procura um ator pelo handle no que já está no banco")
     quem.add_argument("termo", help="pedaço do handle, sem @")
@@ -2094,6 +2182,7 @@ def main(argv: list[str] | None = None) -> int:
             "dump": cmd_dump, "seeds": cmd_seeds, "discover": cmd_discover,
             "candidatos": cmd_candidatos,
         "quem": cmd_quem,
+        "temas": cmd_temas,
             "inspect": cmd_inspect, "load-x": cmd_load_x,
             "cycle": cmd_cycle}[args.command](args)
 
